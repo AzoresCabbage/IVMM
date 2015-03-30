@@ -76,11 +76,14 @@ private:
 	bool* vis;//记录是否访问过
 	double* dis;//到src的距离
 	int* pre;//记录最短路路径
+	int* fa;//标明属于哪个连通块
 	double* preV;//记录最短路路径上各路段的速度
 	double R;//划分区域的半径
 
 	void constructGraph();//建图
 	void divideRegion();
+	void bfs(int u,int sg);
+	void constructConn();//构建连通块
 	double judgeV(string s);//根据道路类型，返回道路速度，单位为km/h
 	vector <double> getSegSpeed(int des);//返回终点编号为des的最短路上各个路段的速度
 	vector <int> getSegPoint(int des);//返回终点编号为des的最短路上的点
@@ -92,7 +95,7 @@ private:
 	bool readFile();
 public:
 
-	double tTosMin;//求t->s时的最短路长度,km
+	double tTosMin;//求t->s时的最短路长度,m
 	int tTosSeg;//求t->s时最短路的路段数
 	int totCandiPoint;//candiPoint的总数，用于编号
 

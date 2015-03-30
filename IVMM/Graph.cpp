@@ -1,10 +1,12 @@
 #include "stdafx.h"
 #include "Graph.h"
+#include <set>
 using namespace std;
 
 Graph::Graph(string RTN){
 	roadTN = RTN;
 	constructGraph();
+	constructConn();
 	divideRegion();
 }
 
@@ -14,8 +16,38 @@ Graph::~Graph(){
 	delete []pre;
 	delete []edge;
 	delete []preV;
+	delete []fa;
 	n = 0;
 	roadTN = "";
+}
+
+void Graph::bfs(int u,int sg){
+	queue <int> q;
+	q.push(u);
+	vis[u] = true;
+	while(!q.empty()){
+		int cur = q.front();
+		q.pop();
+		fa[cur] = sg;
+		size_t sz = edge[cur].size();
+		for(int i=0;i<sz;++i){
+			int v = edge[cur][i].v;
+			if(!vis[v]) {
+				q.push(v);
+				vis[v] = true;
+			}
+		}
+	}
+}
+
+void Graph::constructConn(){
+	for(int i=0;i<=n;++i) fa[i] = -1,vis[i]=false;
+	int cnt = 0;
+	for(int i=0;i<=n;++i){
+		if(vis[i]) continue;
+		bfs(i,cnt);
+		++ cnt;
+	}
 }
 
 void Graph::constructGraph(){
@@ -35,6 +67,7 @@ void Graph::constructGraph(){
 	dis = new double[n+1];
 	pre = new int[n+1];
 	preV = new double[n+1];
+	fa = new int[n+1];
 
 	double x,y;
 	for(int i=0;i<tupleNum;i++){
@@ -62,7 +95,6 @@ void Graph::constructGraph(){
 
 		tmp = PQgetvalue(res,i,2);
 		sscanf_s(tmp.c_str(),"%lf",&cost);
-		cost /= 1000.0;//转化为千米
 
 		tmp = PQgetvalue(res,i,3);
 		v = judgeV(tmp.c_str())*1000/3600;
@@ -86,7 +118,7 @@ void Graph::constructGraph(){
 	cerr << "construct Graph cost = "<<clock()-tm<<"ms"<<endl;
 }
 
-//根据道路类型，返回道路速度，单位为km
+//根据道路类型，返回道路速度，单位为km,使用时*1000/3600变为m/s
 double Graph::judgeV(string ss){
 	char s[50];
 	strcpy_s(s,ss.c_str());
@@ -204,7 +236,7 @@ vector < Point > Graph::getCandidate(Point p,double DIS,int K){
 
 	//ofstream fout("candiPoint.txt",ios::app);
 	vector < Point > st;
-	vector < TMP > tmp;
+	set < TMP > tmp;
 
 	while(!Q.empty()){
 		int u = Q.top().second;
@@ -219,23 +251,22 @@ vector < Point > Graph::getCandidate(Point p,double DIS,int K){
 			double dis = dispToseg(p,la,lb);
 			if(dis <= DIS){
 				Point pivot(pToseg(p,la,lb));
-				tmp.push_back(TMP(dis,pivot,id));
+				tmp.insert(TMP(dis,pivot,id));
 			}
 		}
 	}
 	int tmpsz = (int)tmp.size();
-	if(tmpsz > K) 
-		sort(tmp.begin(),tmp.end());
 	tmpsz = min(K,tmpsz);
-	for(int i=0;i<tmpsz;++i){
-		Point pivot(tmp[i].pts);
+	int cnt = 0;
+	for(auto i=tmp.begin();i!=tmp.end() && cnt<tmpsz;++i,++cnt){
+		Point pivot(i->pts);
 
 		lock_totCandiPoint.lock();
 		pivot.id = totCandiPoint++;
 		allCandiPoint.push_back(pivot);
 		lock_totCandiPoint.unlock();
 
-		pInSeg[pivot.id] = tmp[i].rid;
+		pInSeg[pivot.id] = i->rid;
 		st.push_back(pivot);
 		//fout<<pivot.id<<" "<<pivot.x<<" "<<pivot.y<<" "<<tmp[i].rid<<endl;
 	}
@@ -277,7 +308,7 @@ double Graph::getCandiShortest(Point t,Point s){
 	Point ed2 = Road2.ed;
 
 	pre[n-1] = pre[n-2] = -1;
-
+	if(fa[stID1] != fa[stID2]) return res;
 	//t's id -> n-1 , s'id -> n-2
 	double d1 = getGeoDis(t,st1);
 	double d2 = getGeoDis(t,ed1);

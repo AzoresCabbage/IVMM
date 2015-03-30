@@ -66,14 +66,14 @@ public:
 
 //返回度数的弧度
 inline double rad(double d);
-
+inline double degree(double rad);
 //叉积
 double xmult(Point p1,Point p2,Point p0);
 
 //返回欧几里得距离
 double getEucDis(Point,Point);
 
-//已知两点经纬度，计算两点距离，单位为km
+//已知两点经纬度，计算两点距离，单位为m
 double getGeoDis(Point,Point);
 
 //计算两直线交点,注意事先判断直线是否平行!

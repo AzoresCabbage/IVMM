@@ -13,13 +13,30 @@ class MAT{
 public:
 	double **mat;
 	int n,m;
-	MAT(){}
+	MAT():n(0),m(0),mat(NULL){}
 	MAT(int _n,int _m):n(_n),m(_m){
 		mat = new double*[n];
 		for(int i=0;i<n;++i){
 			mat[i] = new double[m];
 			memset(mat[i],0,sizeof(double)*m);
 		}
+	}
+	MAT& operator = (const MAT& x){
+		double** matOri = mat;
+		mat = new double*[x.n];
+		for(int i=0;i<x.n;++i){
+			mat[i] = new double[x.m];
+			for(int j=0;j<x.m;++j)
+				mat[i][j] = x.mat[i][j];
+		}
+		if(matOri != NULL){
+			for(int i=0;i<n;++i)
+				delete[] matOri[i];
+			delete[] matOri;
+		}
+		n = x.n;
+		m = x.m;
+		return *this;
 	}
 	/*~MAT(){
 		for(int i=0;i<n;++i)
@@ -33,12 +50,12 @@ string dbname = "osm";//数据库名称
 string dbport = "5432";//数据库端口号
 string dbaddr = "127.0.0.1";//数据库地址
 string roadTN = "network";//道路表名称
-int threadNum = 3;//用于计算的线程数量
-double R = 0.01;//选取某轨迹点的候选点的范围，单位为Km
-double Sigma = 0.01;//正态分布，单位为Km
-double miu = 0.005;
+int threadNum = 4;//用于计算的线程数量
+double R = 100;//选取某轨迹点的候选点的范围，单位为m
+double Sigma = 10;//正态分布，单位为m
+double miu = 5;
 int K = 5;//候选点最多的数量
-double beta = 7;//km
+double beta = 7000;//m
 
 //////////////////变量定义/////////////////////////
 //variable
@@ -117,7 +134,8 @@ double N(int i,int t){
 //if t == s then return 1; because t must transmit s
 double V(double d,Point t,Point s){
 	if(t == s) return 1;
-	return d/network->getCandiShortest(t,s);
+	double tmp = network->getCandiShortest(t,s);
+	return d/tmp;
 }
 
 mutex lock_it;
@@ -144,11 +162,19 @@ DWORD WINAPI calc_candiPoint(LPVOID ptr){
 
 //传入轨迹上每个点的候选点集合
 //计算F,Fs,Ft
-//#define FT
-vector <Point> FindMatchedSequence(int i,int k){
+vector <Point> FindMatchedSequence(int i,int k,vector <MAT> fi_i){
 	tm = clock();
-	std::cerr<<"start FindMatchedSequence "<<i<<" "<<k<<endl;
+	//std::cerr<<"start FindMatchedSequence "<<i<<" "<<k<<endl;
 	vector <Point> res;
+
+	//if(i > 0){
+	//	for(int s = 0;s<candiPoint[i].size();++s){
+	//		for(int t=0;t<candiPoint[i-1].size();++t){
+	//			fprintf(stderr,"%lf ",fi[i][1].mat[t][s]);
+	//		}
+	//		fprintf(stderr,"\n");
+	//	}
+	//}
 
 	int totCandiNum = network->totCandiPoint;
 	double *fmx = new double[totCandiNum];
@@ -157,13 +183,21 @@ vector <Point> FindMatchedSequence(int i,int k){
 	for(int t=0;t<candiPoint[0].size();++t)
 		fmx[candiPoint[0][t].id] = W[i][0]*N(0,t);
 
-	for(int s = 0;s<candiPoint[i].size();++s){
-		if(s == k) continue;
-		int tSz = 0;
-		if(i == 0) tSz = (int)candiPoint[i].size();
-		else tSz = (int)candiPoint[i-1].size();
-		for(int t=0;t<tSz;++t){
-			fi[i][i].mat[t][s] = -DBL_MAX_10_EXP;
+	if(i == 0){//i = 0,set init value be -max because there is no fi[i][0],only have fi[i][1]
+		for(int t=0;t<candiPoint[0].size();++t){
+			if(t == k) continue;
+			fmx[candiPoint[0][t].id] = -1e300;
+		}
+	}
+	else{
+		for(int s = 0;s<candiPoint[i].size();++s){
+			if(s == k) continue;
+			int tSz = 0;
+			if(i == 0) tSz = (int)candiPoint[i].size();
+			else tSz = (int)candiPoint[i-1].size();
+			for(int t=0;t<tSz;++t){
+				fi_i[i].mat[t][s] = -1e300;
+			}
 		}
 	}
 
@@ -179,17 +213,25 @@ vector <Point> FindMatchedSequence(int i,int k){
 				//assert(candiPoint[j-1][t].id < totCandiNum);
 				//assert(t < fi[i][j].n);
 				//assert(s < fi[i][j].m);
-
-				if(fmx[candiPoint[j][s].id] < fmx[candiPoint[j-1][t].id]+fi[i][j].mat[t][s]){
-					fmx[candiPoint[j][s].id] = fmx[candiPoint[j-1][t].id]+fi[i][j].mat[t][s];
+				double fs = fmx[candiPoint[j][s].id];
+				double ft = fmx[candiPoint[j-1][t].id];
+				/*assert(t < fi[i][j].n);
+				assert(s < fi[i][j].m);
+				assert(i < fi.size());
+				assert(j < fi[i].size());
+				cout<<"n = "<<fi[i][j].n<<" m = "<<fi[i][j].m<<endl;
+				cout<<"i = "<<i<<" j = "<<j<<endl;*/
+				double fijts = fi_i[j].mat[t][s];
+				if(fs < ft+fijts){
+					fmx[candiPoint[j][s].id] = ft+fijts;
 					pre[candiPoint[j][s].id] = candiPoint[j-1][t].id;
 				}
 			}
 		}
 	}
 
-	double mx = 0;
-	int c = 0;
+	double mx = fmx[candiPoint[pNum-1][0].id];
+	int c = candiPoint[pNum-1][0].id;
 	for(int s=0;s<candiPoint[pNum-1].size();++s){
 		if(mx < fmx[candiPoint[pNum-1][s].id]){
 			mx = fmx[candiPoint[pNum-1][s].id];
@@ -205,14 +247,15 @@ vector <Point> FindMatchedSequence(int i,int k){
 	delete[] pre;
 	delete[] fmx;
 
-	reverse(res.begin(),res.end());
-	std::cerr<<"FindMatchedSequence cost = "<<clock()-tm<<"ms"<<endl;
+	//reverse(res.begin(),res.end());
+	//std::cerr<<"FindMatchedSequence cost = "<<clock()-tm<<"ms"<<endl;
 	return res;
 }
 
 DWORD WINAPI interactiveVoting(LPVOID ptr){
 	int upbound = (int)P.size();
 	int cur = 0;
+	/*ofstream fout("seq.txt",ios::app);*/
 	while(true)
 	{
 		lock_it.lock();
@@ -224,30 +267,63 @@ DWORD WINAPI interactiveVoting(LPVOID ptr){
 		++it;
 		lock_it.unlock();
 
+		/*fprintf(stderr,"W[%d] = ",cur);*/
 		W[cur].resize(upbound);
 		for(int j=0;j<upbound;++j){
 			W[cur][j] = f(getGeoDis(P[cur],P[j]));
+			/*fprintf(stderr,"%lf ",W[cur][j]);*/
 		}
+		/*fprintf(stderr,"\n");*/
 
-		for(int j=0;j<upbound;++j){
+		/*fprintf(stderr,"fi[%d] = ",cur);*/
+		fi[cur].resize(upbound);
+		for(int j=1;j<upbound;++j){//j indicate M^j , not exist M^1
 			MAT tMat(M[j].n,M[j].m);
-			assert(j < M.size());
-			for(int t = 0;t<tMat.n;++t){
-				for(int s=0;s<tMat.m;++s){
-					tMat.mat[t][s] = W[cur][j]*M[j].mat[t][s];
+			/*fprintf(stderr,"j = %d\n",j);*/
+			//assert(j < M.size());
+			if(j-1 < cur){
+				for(int t = 0;t<tMat.n;++t){
+					for(int s=0;s<tMat.m;++s){
+						tMat.mat[t][s] = W[cur][j-1]*M[j].mat[t][s];
+						/*fprintf(stderr,"%lf ",tMat.mat[t][s]);*/
+					}
+					/*fprintf(stderr,"\n");*/
 				}
 			}
-			fi[cur].push_back(tMat);
+			else{
+				for(int t = 0;t<tMat.n;++t){
+					for(int s=0;s<tMat.m;++s){
+						tMat.mat[t][s] = W[cur][j]*M[j].mat[t][s];
+						/*fprintf(stderr,"%lf ",tMat.mat[t][s]);*/
+					}
+					/*fprintf(stderr,"\n");*/
+				}
+			}
+			fi[cur][j] = tMat;
 		}
-
+		
 		for(int j=0;j<candiPoint[cur].size();++j){
-			vector <Point> Seq = FindMatchedSequence(cur,j);
+			vector <MAT> tFi;
+			tFi.resize(fi[cur].size());
+			for(int i=0,num=(int)fi[cur].size();i<num;++i)
+				tFi[i] = fi[cur][i];
+			vector <Point> Seq = FindMatchedSequence(cur,j,tFi);
 			lockVote.lock();
+			/*cerr<<"candi id = "<<candiPoint[cur][j].id<<endl;*/
+			/*fout<<cur<<" "<<candiPoint[cur][j].id<<":"<<endl;*/
 			for(int k=0;k<Seq.size();++k)
+			{
+				/*cerr<<Seq[k].id<<" ";*/
+				/*fout<<Seq[k].id<<" ";*/
 				++ vote[Seq[k].id];
+			}
+			/*fout<<endl;*/
+			/*cerr<<endl;*/
 			lockVote.unlock();
 		}
+		
 	}
+	/*fout.close();*/
 }
 
 vector <Point> IVMM(){
@@ -285,11 +361,14 @@ vector <Point> IVMM(){
 		int nPre = (int)candiPoint[i-1].size();
 		int nCur = (int)candiPoint[i].size();
 		MAT tMat(nPre,nCur);
+		/*fprintf(stderr,"M[%d] = \n",i);*/
 		for(int t = 0;t<nPre;++t){
 			for(int s=0;s<nCur;++s){
-				tMat.mat[t][s] = N(i-1,t)
+				tMat.mat[t][s] = N(i,s)
 					*V(getGeoDis(P[i-1],P[i]),candiPoint[i-1][t],candiPoint[i][s]);
+				/*fprintf(stderr,"%lf ",tMat.mat[t][s]);*/
 			}
+			/*fprintf(stderr,"\n");*/
 		}
 		M[i] = tMat;
 	}
@@ -334,6 +413,10 @@ vector <Point> IVMM(){
 		}
 		res.push_back(candiPoint[i][pos]);
 	}
+	/*ofstream fout("vote.txt");
+	for(int i=0;i<vote.size();++i)
+		fout<<vote[i]<<endl;
+	fout.close();*/
 	return res;
 }
 
@@ -389,11 +472,13 @@ void writeToDB(vector <Point> Traj){
 		}
 		else{
 			vector <int> path = network->getPath(Traj[i-1],Traj[i]);
+
 			path.pop_back();//path中包含S,T两个点位于一头一尾
 			if(path.empty() || path.size() < 2) {
-				sprintf_s(buffer,"insert into trajectory_line values(%d,%d,%d,ST_GeomFromText('LineString(%lf %lf,%lf %lf)',4326))",ID++,Traj[i-1].id,Traj[i].id,Traj[i-1].x,Traj[i-1].y,Traj[i].x,Traj[i].y);
+				
+				/*sprintf_s(buffer,"insert into trajectory_line values(%d,%d,%d,ST_GeomFromText('LineString(%lf %lf,%lf %lf)',4326))",ID++,Traj[i-1].id,Traj[i].id,Traj[i-1].x,Traj[i-1].y,Traj[i].x,Traj[i].y);
 				SQL = buffer;
-				DB->execUpdate(SQL);
+				DB->execUpdate(SQL);*/
 			}
 			else{
 				Point cur(network->getPointById(path[1]));
@@ -419,7 +504,6 @@ void writeToDB(vector <Point> Traj){
 }
 
 int _tmain(int argc, _TCHAR* argv[]){
-
 	//preProcData();
 	//cerr<<"over"<<endl;
 	/*if(!readConfig()){
@@ -430,7 +514,7 @@ int _tmain(int argc, _TCHAR* argv[]){
 	DB = new Database(dbname,dbport,dbaddr);
 	network = new Graph(roadTN);
 
-	//system("pause");
+	////system("pause");
 
 	string basePath;
 	cerr<<"please input file path:";
@@ -460,6 +544,11 @@ int _tmain(int argc, _TCHAR* argv[]){
 		cerr<<"please input file path:";
 	}
 	
+	//Point p1(116.367476925,39.9172884517);
+	//Point p2(116.36760548,39.9173675835);
+	//Point p(116.367718912,39.9179293381);
+	//cout<<getGeoDis(p1,p2)<<endl;
+	//cout<<dispToseg(p,p1,p2)<<endl;
 	return 0;
 }
 
