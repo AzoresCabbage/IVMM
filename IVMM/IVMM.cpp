@@ -9,6 +9,8 @@
 #include "Graph.h"
 using namespace std;
 
+//#define MYDEBUG
+
 class MAT{
 public:
 	double **mat;
@@ -50,8 +52,8 @@ string dbname = "osm";//数据库名称
 string dbport = "5432";//数据库端口号
 string dbaddr = "127.0.0.1";//数据库地址
 string roadTN = "network";//道路表名称
-int threadNum = 4;//用于计算的线程数量
-double R = 100;//选取某轨迹点的候选点的范围，单位为m
+int threadNum = 1;//用于计算的线程数量
+double R = 50;//选取某轨迹点的候选点的范围，单位为m,对数据预处理时删去间距小于50的点
 double Sigma = 10;//正态分布，单位为m
 double miu = 5;
 int K = 5;//候选点最多的数量
@@ -247,7 +249,7 @@ vector <Point> FindMatchedSequence(int i,int k,vector <MAT> fi_i){
 	delete[] pre;
 	delete[] fmx;
 
-	//reverse(res.begin(),res.end());
+	reverse(res.begin(),res.end());
 	//std::cerr<<"FindMatchedSequence cost = "<<clock()-tm<<"ms"<<endl;
 	return res;
 }
@@ -255,7 +257,6 @@ vector <Point> FindMatchedSequence(int i,int k,vector <MAT> fi_i){
 DWORD WINAPI interactiveVoting(LPVOID ptr){
 	int upbound = (int)P.size();
 	int cur = 0;
-	/*ofstream fout("seq.txt",ios::app);*/
 	while(true)
 	{
 		lock_it.lock();
@@ -266,37 +267,52 @@ DWORD WINAPI interactiveVoting(LPVOID ptr){
 		cur = it;
 		++it;
 		lock_it.unlock();
-
-		/*fprintf(stderr,"W[%d] = ",cur);*/
+#ifdef MYDEBUG
+		fprintf(stderr,"W[%d] = ",cur);
+#endif
 		W[cur].resize(upbound);
 		for(int j=0;j<upbound;++j){
 			W[cur][j] = f(getGeoDis(P[cur],P[j]));
-			/*fprintf(stderr,"%lf ",W[cur][j]);*/
+#ifdef MYDEBUG
+			fprintf(stderr,"%lf ",W[cur][j]);
+#endif
 		}
-		/*fprintf(stderr,"\n");*/
+#ifdef MYDEBUG
+		fprintf(stderr,"\n");
 
-		/*fprintf(stderr,"fi[%d] = ",cur);*/
+		fprintf(stderr,"fi[%d] = ",cur);
+#endif
 		fi[cur].resize(upbound);
 		for(int j=1;j<upbound;++j){//j indicate M^j , not exist M^1
 			MAT tMat(M[j].n,M[j].m);
-			/*fprintf(stderr,"j = %d\n",j);*/
+#ifdef MYDEBUG
+			fprintf(stderr,"j = %d\n",j);
+#endif
 			//assert(j < M.size());
 			if(j-1 < cur){
 				for(int t = 0;t<tMat.n;++t){
 					for(int s=0;s<tMat.m;++s){
 						tMat.mat[t][s] = W[cur][j-1]*M[j].mat[t][s];
-						/*fprintf(stderr,"%lf ",tMat.mat[t][s]);*/
+#ifdef MYDEBUG
+						fprintf(stderr,"%lf ",tMat.mat[t][s]);
+#endif
 					}
-					/*fprintf(stderr,"\n");*/
+#ifdef MYDEBUG
+					fprintf(stderr,"\n");
+#endif
 				}
 			}
 			else{
 				for(int t = 0;t<tMat.n;++t){
 					for(int s=0;s<tMat.m;++s){
 						tMat.mat[t][s] = W[cur][j]*M[j].mat[t][s];
-						/*fprintf(stderr,"%lf ",tMat.mat[t][s]);*/
+#ifdef MYDEBUG
+						fprintf(stderr,"%lf ",tMat.mat[t][s]);
+#endif
 					}
-					/*fprintf(stderr,"\n");*/
+#ifdef MYDEBUG
+					fprintf(stderr,"\n");
+#endif
 				}
 			}
 			fi[cur][j] = tMat;
@@ -309,21 +325,22 @@ DWORD WINAPI interactiveVoting(LPVOID ptr){
 				tFi[i] = fi[cur][i];
 			vector <Point> Seq = FindMatchedSequence(cur,j,tFi);
 			lockVote.lock();
-			/*cerr<<"candi id = "<<candiPoint[cur][j].id<<endl;*/
-			/*fout<<cur<<" "<<candiPoint[cur][j].id<<":"<<endl;*/
+#ifdef MYDEBUG
+			cerr<<"candi id = "<<candiPoint[cur][j].id<<endl;
+#endif
 			for(int k=0;k<Seq.size();++k)
 			{
-				/*cerr<<Seq[k].id<<" ";*/
-				/*fout<<Seq[k].id<<" ";*/
+#ifdef MYDEBUG
+				cerr<<Seq[k].id<<" ";
+#endif
 				++ vote[Seq[k].id];
 			}
-			/*fout<<endl;*/
-			/*cerr<<endl;*/
+#ifdef MYDEBUG
+			cerr<<endl;
+#endif
 			lockVote.unlock();
 		}
-		
 	}
-	/*fout.close();*/
 }
 
 vector <Point> IVMM(){
@@ -361,14 +378,20 @@ vector <Point> IVMM(){
 		int nPre = (int)candiPoint[i-1].size();
 		int nCur = (int)candiPoint[i].size();
 		MAT tMat(nPre,nCur);
-		/*fprintf(stderr,"M[%d] = \n",i);*/
+#ifdef MYDEBUG
+		fprintf(stderr,"M[%d] = \n",i);
+#endif
 		for(int t = 0;t<nPre;++t){
 			for(int s=0;s<nCur;++s){
 				tMat.mat[t][s] = N(i,s)
 					*V(getGeoDis(P[i-1],P[i]),candiPoint[i-1][t],candiPoint[i][s]);
-				/*fprintf(stderr,"%lf ",tMat.mat[t][s]);*/
+#ifdef MYDEBUG
+				fprintf(stderr,"%lf ",tMat.mat[t][s]);
+#endif
 			}
-			/*fprintf(stderr,"\n");*/
+#ifdef MYDEBUG
+			fprintf(stderr,"\n");
+#endif
 		}
 		M[i] = tMat;
 	}
