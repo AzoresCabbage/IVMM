@@ -443,6 +443,27 @@ vector <Point> IVMM(){
 	return res;
 }
 
+vector <Point> dealFlyPoint(vector <Point> Ori){
+	vector <Point> res;
+	res.push_back(Ori[0]);
+	const double LimitV = 23;
+	int sz = (int)Ori.size();
+	for(int i=1;i<sz;++i){
+		double dis = network->getCandiShortest(Ori[i-1],Ori[i]);
+		double span = P[i].date - P[i-1].date;
+		if(dis / span > LimitV){
+			if(i-2>=0 && ( network->getCandiShortest(Ori[i-2],Ori[i])/(P[i].date - P[i-2].date) ) < LimitV){
+				res.pop_back();
+				res.push_back(Ori[i]);
+			}
+			else 
+				continue;
+		}
+		res.push_back(Ori[i]);
+	}
+	return res;
+}
+
 //把匹配选中的点，路径写入数据库
 void writeToDB(vector <Point> Traj){
 	//写入选中的候选点
@@ -559,7 +580,7 @@ int _tmain(int argc, _TCHAR* argv[]){
 		cerr<<"loadInitPoint cost "<<clock()-tm<<"ms"<<endl;
 
 		vector <Point> res = IVMM();
-
+		res = dealFlyPoint(res);
 		cerr<<"start writeToDB->.."<<endl;
 		tm = clock();
 		writeToDB(res);
