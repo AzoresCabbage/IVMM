@@ -14,14 +14,6 @@
 
 // TODO: 在此处引用程序需要的其他头文件
 #include <iostream>
+#include <math.h>
 #include <fstream>
 #include <vector>
-#include <libpq-fe.h>
-#include <map>
-#include <string>
-#include <time.h>
-#include <mutex>
-#include <Windows.h>
-#include <queue>
-#include <assert.h>
-#include <utility>

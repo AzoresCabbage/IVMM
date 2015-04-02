@@ -4,19 +4,19 @@
 //k为某个轨迹点的候选点数
 
 #include "stdafx.h"
-#include "database.h"
 #include "geometry.h"
 #include "Graph.h"
+#include "database.h"
 using namespace std;
 
 //#define MYDEBUG
-
+#define BUFFSIZE 5000000
 class MAT{
 public:
 	double **mat;
 	int n,m;
 	MAT():n(0),m(0),mat(NULL){}
-	MAT(int _n,int _m):n(_n),m(_m){
+	MAT(int _n,int _m):n(_n),m(_m),mat(NULL){
 		mat = new double*[n];
 		for(int i=0;i<n;++i){
 			mat[i] = new double[m];
@@ -31,7 +31,7 @@ public:
 			for(int j=0;j<x.m;++j)
 				mat[i][j] = x.mat[i][j];
 		}
-		if(matOri != NULL){
+		if(n && m && matOri != NULL){
 			for(int i=0;i<n;++i)
 				delete[] matOri[i];
 			delete[] matOri;
@@ -40,11 +40,13 @@ public:
 		m = x.m;
 		return *this;
 	}
-	/*~MAT(){
-		for(int i=0;i<n;++i)
-			delete[] mat[i];
-		delete[] mat;
-	}*/
+	~MAT(){
+		if(n && m && mat!=NULL){
+			for(int i=0;i<n;++i)
+				delete[] mat[i];
+			delete[] mat;
+		}
+	}
 };
 
 ////////////////////config////////////////////////
@@ -52,13 +54,14 @@ string dbname = "osm";//数据库名称
 string dbport = "5432";//数据库端口号
 string dbaddr = "127.0.0.1";//数据库地址
 string roadTN = "network";//道路表名称
-int threadNum = 1;//用于计算的线程数量
+int threadNum = 3;//用于计算的线程数量
+int getCandiPointThreadNum = 1;
 double R = 50;//选取某轨迹点的候选点的范围，单位为m,对数据预处理时删去间距小于50的点
 double Sigma = 10;//正态分布，单位为m
 double miu = 5;
 int K = 5;//候选点最多的数量
 double beta = 7000;//m
-
+char buffer[BUFFSIZE];
 //////////////////变量定义/////////////////////////
 //variable
 time_t tm;//计时变量
@@ -66,47 +69,20 @@ double Coef;//norm distribution coef
 vector <GeoPoint> P;//轨迹点
 vector < vector <Point> > candiPoint;//每个轨迹点的候选点集合
 vector <MAT> M;
-vector < vector <double> > W;
-vector < vector <MAT> > fi;
 vector <int> vote;
 vector <double> fvalue;
 //F是总代价:F = Fs*Ft
 map < pair<int,int> , double > F;
 
-
-Database *DB;//数据库连接实例
+Database DB;
 Graph *network;
-
 //////////////////End/////////////////////////
-//////////not main logic func/////////////////
-vector < pair<double,double> > parseString(string str);
-bool readConfig();
-void loadInitPoint();
-void loadCandiPoint();
-//////////////////////////////////////////////
 
-bool getTaxiTrajectory(string filePath){
-	ifstream fin;
-	fin.open(filePath);
-	if(!fin) {
-		std::cerr<<"File open error!"<<endl;
-		fin.close();
-		return false;
-	}
-	else{
-		double lat,lon;
-		long long carID;
-		int y,mon,d,h,min,s;
-		char buff[100];
-		while(fin.getline(buff,100)){
-			sscanf_s(buff,"%lld,%d-%d-%d %d:%d:%d,%lf,%lf",&carID,&y,&mon,&d,&h,&min,&s,&lon,&lat);
-			P.push_back(GeoPoint(lat,lon,Date(y,mon,d,h,min,s)));
-		}
-	}
-	fin.close();
-	candiPoint.resize(P.size());
-	return true;
-}
+//////////not main logic func/////////////////
+bool readConfig();
+bool getTaxiTrajectory(string filePath);
+void writeToDB(const vector <Point>& Traj);
+//////////////////////////////////////////////
 
 //初始化
 //读入轨迹，建立点的映射
@@ -121,8 +97,7 @@ bool init(string basePath){
 	return getTaxiTrajectory(basePath);
 }
 
-double f(double x)
-{
+double f(double x){
 	return exp(-SQR(x/beta));
 }
 
@@ -155,35 +130,33 @@ DWORD WINAPI calc_candiPoint(LPVOID ptr){
 		cur = it;
 		++it;
 		lock_it.unlock();
-
-		vector <Point> tmp = network->getCandidate(Point(P[cur].longitude,P[cur].latitude),R,K);
+		try{
+			vector <Point> tmp = network->getCandidate(P[cur],R,K);
+			candiPoint[cur] = tmp;
+		}
+		catch (exception e){
+			printf("%d error!",cur);
+		}
 		
-		candiPoint[cur] = tmp;
 	}
 }
 
 //传入轨迹上每个点的候选点集合
 //计算F,Fs,Ft
-vector <Point> FindMatchedSequence(int i,int k,vector <MAT> fi_i){
+vector <Point> FindMatchedSequence(int i,int k,vector <MAT>& fi_i,vector <double>& Wi){
 	tm = clock();
 	//std::cerr<<"start FindMatchedSequence "<<i<<" "<<k<<endl;
 	vector <Point> res;
 
-	//if(i > 0){
-	//	for(int s = 0;s<candiPoint[i].size();++s){
-	//		for(int t=0;t<candiPoint[i-1].size();++t){
-	//			fprintf(stderr,"%lf ",fi[i][1].mat[t][s]);
-	//		}
-	//		fprintf(stderr,"\n");
-	//	}
-	//}
-
 	int totCandiNum = network->totCandiPoint;
 	double *fmx = new double[totCandiNum];
 	int *pre = new int[totCandiNum];
+	
+	for(int t=0;t<totCandiNum;++t)
+		fmx[t] = -1-1e300;
 
 	for(int t=0;t<candiPoint[0].size();++t)
-		fmx[candiPoint[0][t].id] = W[i][0]*N(0,t);
+		fmx[candiPoint[0][t].id] = Wi[0]*N(0,t);
 
 	if(i == 0){//i = 0,set init value be -max because there is no fi[i][0],only have fi[i][1]
 		for(int t=0;t<candiPoint[0].size();++t){
@@ -270,11 +243,13 @@ DWORD WINAPI interactiveVoting(LPVOID ptr){
 #ifdef MYDEBUG
 		fprintf(stderr,"W[%d] = ",cur);
 #endif
-		W[cur].resize(upbound);
+		//fprintf(stderr,"%d start voting...\n",cur);
+		vector <double> W;
+		W.resize(upbound);
 		for(int j=0;j<upbound;++j){
-			W[cur][j] = f(getGeoDis(P[cur],P[j]));
+			W[j] = f(getGeoDis(P[cur],P[j]));
 #ifdef MYDEBUG
-			fprintf(stderr,"%lf ",W[cur][j]);
+			fprintf(stderr,"%lf ",W[j]);
 #endif
 		}
 #ifdef MYDEBUG
@@ -282,7 +257,8 @@ DWORD WINAPI interactiveVoting(LPVOID ptr){
 
 		fprintf(stderr,"fi[%d] = ",cur);
 #endif
-		fi[cur].resize(upbound);
+		vector <MAT> fi;
+		fi.resize(upbound);
 		for(int j=1;j<upbound;++j){//j indicate M^j , not exist M^1
 			MAT tMat(M[j].n,M[j].m);
 #ifdef MYDEBUG
@@ -292,7 +268,7 @@ DWORD WINAPI interactiveVoting(LPVOID ptr){
 			if(j-1 < cur){
 				for(int t = 0;t<tMat.n;++t){
 					for(int s=0;s<tMat.m;++s){
-						tMat.mat[t][s] = W[cur][j-1]*M[j].mat[t][s];
+						tMat.mat[t][s] = W[j-1]*M[j].mat[t][s];
 #ifdef MYDEBUG
 						fprintf(stderr,"%lf ",tMat.mat[t][s]);
 #endif
@@ -305,7 +281,7 @@ DWORD WINAPI interactiveVoting(LPVOID ptr){
 			else{
 				for(int t = 0;t<tMat.n;++t){
 					for(int s=0;s<tMat.m;++s){
-						tMat.mat[t][s] = W[cur][j]*M[j].mat[t][s];
+						tMat.mat[t][s] = W[j]*M[j].mat[t][s];
 #ifdef MYDEBUG
 						fprintf(stderr,"%lf ",tMat.mat[t][s]);
 #endif
@@ -315,15 +291,15 @@ DWORD WINAPI interactiveVoting(LPVOID ptr){
 #endif
 				}
 			}
-			fi[cur][j] = tMat;
+			fi[j] = tMat;
 		}
 		
 		for(int j=0;j<candiPoint[cur].size();++j){
 			vector <MAT> tFi;
-			tFi.resize(fi[cur].size());
-			for(int i=0,num=(int)fi[cur].size();i<num;++i)
-				tFi[i] = fi[cur][i];
-			vector <Point> Seq = FindMatchedSequence(cur,j,tFi);
+			tFi.resize(fi.size());
+			for(int i=0,num=(int)fi.size();i<num;++i)
+				tFi[i] = fi[i];
+			vector <Point> Seq = FindMatchedSequence(cur,j,tFi,W);
 			lockVote.lock();
 #ifdef MYDEBUG
 			cerr<<"candi id = "<<candiPoint[cur][j].id<<endl;
@@ -350,16 +326,34 @@ vector <Point> IVMM(){
 
 	//////////并行计算candipoint，初始化it
 	it= 0;
-	HANDLE *handle = new HANDLE[threadNum];
-	for(int i=0;i<threadNum;++i){
+	HANDLE *handle = new HANDLE[getCandiPointThreadNum];
+	for(int i=0;i<getCandiPointThreadNum;++i){
 		handle[i] = CreateThread(NULL,0,calc_candiPoint,NULL,0,NULL);
 	}
-	for(int i=0;i<threadNum;++i){
+	for(int i=0;i<getCandiPointThreadNum;++i){
 		WaitForSingleObject(handle[i],INFINITE);
 	}
+	delete[] handle;
 	std::cerr<<"getCandidate cost = "<<clock()-tm<<"ms"<<endl;
-	loadCandiPoint();
+	//删去为候选点为0的点
+	try{
+		vector <int> noCandiPointIdx;
+		for(int i=0,pNum = (int)P.size();i<pNum;++i){
+			if(candiPoint[i].empty()){
+				noCandiPointIdx.push_back(i);
+			}
+		}
+		for(int i=0,num = (int)noCandiPointIdx.size();i < num;++i){
+			P.erase(P.begin()+noCandiPointIdx[i]-i);
+			candiPoint.erase(candiPoint.begin()+noCandiPointIdx[i]-i);
+		}
+	}
+	catch (exception e){
+		fprintf(stderr,"erase point error! %s\n",e);
+	}
 
+	DB.loadInitPoint(P);
+	DB.loadCandiPoint(candiPoint);
 
 	int pNum = (int)P.size();
 
@@ -375,6 +369,7 @@ vector <Point> IVMM(){
 
 	std::cerr<<"start calc Matrix M"<<endl;
 	for(int i=1;i<pNum;++i){
+		//std::cerr<<"start calc Matrix M %d\n"<<i<<endl;
 		int nPre = (int)candiPoint[i-1].size();
 		int nCur = (int)candiPoint[i].size();
 		MAT tMat(nPre,nCur);
@@ -397,11 +392,6 @@ vector <Point> IVMM(){
 	}
 	std::cerr << "calc Matrix M cost = "<<clock() - tm<<"ms"<<endl;
 
-	//计算W矩阵
-	//W[i][j]表示p[j]对p[i]的影响
-	W.resize(pNum);
-	//calc fi
-	fi.resize(pNum);
 	//calc seq
 	int totCandiNum = network->totCandiPoint;
 	fvalue.resize(totCandiNum);
@@ -411,6 +401,7 @@ vector <Point> IVMM(){
 	std::cerr<<"start interactive voting"<<endl;
 	tm = clock();
 	it = 0;
+	handle = new HANDLE[threadNum];
 	for(int i=0;i<threadNum;++i){
 		handle[i] = CreateThread(NULL,0,interactiveVoting,NULL,0,NULL);
 	}
@@ -446,7 +437,7 @@ vector <Point> IVMM(){
 vector <Point> dealFlyPoint(vector <Point> Ori){
 	vector <Point> res;
 	res.push_back(Ori[0]);
-	const double LimitV = 23;
+	const double LimitV = 25;
 	int sz = (int)Ori.size();
 	for(int i=1;i<sz;++i){
 		double dis = network->getCandiShortest(Ori[i-1],Ori[i]);
@@ -455,6 +446,7 @@ vector <Point> dealFlyPoint(vector <Point> Ori){
 			if(i-2>=0 && ( network->getCandiShortest(Ori[i-2],Ori[i])/(P[i].date - P[i-2].date) ) < LimitV){
 				res.pop_back();
 				res.push_back(Ori[i]);
+				continue;
 			}
 			else 
 				continue;
@@ -464,101 +456,18 @@ vector <Point> dealFlyPoint(vector <Point> Ori){
 	return res;
 }
 
-//把匹配选中的点，路径写入数据库
-void writeToDB(vector <Point> Traj){
-	//写入选中的候选点
-	string SQL = "select * from pg_class where relname = 'trajectory_point'";
-	PGresult* res = DB->execQuery(SQL);
-	int num = PQntuples(res);
-	PQclear(res);
-
-	if(num != 0){
-		SQL = "Delete from trajectory_point";
-		DB->execUpdate(SQL);
-	}
-	else{
-		SQL = "create table trajectory_point (id integer primary key,way geometry(Point,4326))";
-		DB->execUpdate(SQL);
-	}
-	size_t sz = Traj.size();
-	char buffer[500];
-
-	for(int i=0;i<sz;++i){
-		sprintf_s(buffer,"insert into trajectory_point values(%d,ST_GeomFromText('Point(%lf %lf)',4326))",i+1,Traj[i].x,Traj[i].y);
-		SQL = buffer;
-		DB->execUpdate(SQL);
-	}
-
-	//写入匹配的轨迹
-	SQL = "select * from pg_class where relname = 'trajectory_line'";
-	res = DB->execQuery(SQL);
-	num = PQntuples(res);
-	PQclear(res);
-
-	if(num != 0){
-		SQL = "Delete from trajectory_line";
-		DB->execUpdate(SQL);
-	}
-	else{
-		SQL = "create table trajectory_line (id integer primary key,src integer,des integer,way geometry(LineString,4326))";
-		DB->execUpdate(SQL);
-	}
-	sz = Traj.size();
-	buffer[500];
-
-	int ID = 0;
-	for(int i=1;i<sz;++i){
-		if(network->isInSameSeg(Traj[i-1].id,Traj[i].id)){
-			//in same seg
-			sprintf_s(buffer,"insert into trajectory_line values(%d,%d,%d,ST_GeomFromText('LineString(%lf %lf,%lf %lf)',4326))",ID++,Traj[i-1].id,Traj[i].id,Traj[i-1].x,Traj[i-1].y,Traj[i].x,Traj[i].y);
-			SQL = buffer;
-			DB->execUpdate(SQL);
-		}
-		else{
-			vector <int> path = network->getPath(Traj[i-1],Traj[i]);
-
-			path.pop_back();//path中包含S,T两个点位于一头一尾
-			if(path.empty() || path.size() < 2) {
-				
-				/*sprintf_s(buffer,"insert into trajectory_line values(%d,%d,%d,ST_GeomFromText('LineString(%lf %lf,%lf %lf)',4326))",ID++,Traj[i-1].id,Traj[i].id,Traj[i-1].x,Traj[i-1].y,Traj[i].x,Traj[i].y);
-				SQL = buffer;
-				DB->execUpdate(SQL);*/
-			}
-			else{
-				Point cur(network->getPointById(path[1]));
-				sprintf_s(buffer,"insert into trajectory_line values(%d,%d,%d,ST_GeomFromText('LineString(%lf %lf,%lf %lf)',4326))",ID++,Traj[i-1].id,Traj[i].id,cur.x,cur.y,Traj[i].x,Traj[i].y);
-				SQL = buffer;
-				DB->execUpdate(SQL);
-				size_t psz = path.size();
-				for(int j=2;j<psz;++j){
-					cur = network->getPointById(path[j]);
-					Point pre(network->getPointById(path[j-1]));
-					sprintf_s(buffer,"insert into trajectory_line values(%d,%d,%d,ST_GeomFromText('LineString(%lf %lf,%lf %lf)',4326))",ID++,Traj[i-1].id,Traj[i].id,cur.x,cur.y,pre.x,pre.y);
-					SQL = buffer;
-					DB->execUpdate(SQL);
-				}
-				cur = network->getPointById(path[psz-1]);
-				sprintf_s(buffer,"insert into trajectory_line values(%d,%d,%d,ST_GeomFromText('LineString(%lf %lf,%lf %lf)',4326))",ID++,Traj[i-1].id,Traj[i].id,Traj[i-1].x,Traj[i-1].y,cur.x,cur.y);
-				SQL = buffer;
-				DB->execUpdate(SQL);
-			}
-
-		}
-	}
-}
-
 int _tmain(int argc, _TCHAR* argv[]){
-	//preProcData();
-	//cerr<<"over"<<endl;
 	/*if(!readConfig()){
 		cerr << "read config.ini error!" <<endl;
 		return 0;
 	}*/
+	//DB.preProcData();
+	/*DB.reOrder();
+	system("pause");*/
 
-	DB = new Database(dbname,dbport,dbaddr);
 	network = new Graph(roadTN);
 
-	////system("pause");
+	
 
 	string basePath;
 	cerr<<"please input file path:";
@@ -574,25 +483,14 @@ int _tmain(int argc, _TCHAR* argv[]){
 		}
 		cerr<<"init cost "<<clock()-tm<<"ms"<<endl;
 
-		cerr<<"start loadInitPoint..."<<endl;
-		tm = clock();
-		loadInitPoint();
-		cerr<<"loadInitPoint cost "<<clock()-tm<<"ms"<<endl;
-
 		vector <Point> res = IVMM();
-		res = dealFlyPoint(res);
+		//res = dealFlyPoint(res);
 		cerr<<"start writeToDB->.."<<endl;
 		tm = clock();
 		writeToDB(res);
 		cerr<<"writeToDB cost "<<clock()-tm<<"ms"<<endl;
 		cerr<<"please input file path:";
 	}
-	
-	//Point p1(116.367476925,39.9172884517);
-	//Point p2(116.36760548,39.9173675835);
-	//Point p(116.367718912,39.9179293381);
-	//cout<<getGeoDis(p1,p2)<<endl;
-	//cout<<dispToseg(p,p1,p2)<<endl;
 	return 0;
 }
 
@@ -653,180 +551,112 @@ bool readConfig(){
 	}
 }
 
-//把轨迹点存入数据库
-void loadInitPoint(){
-	string SQL = "select * from pg_class where relname = 'init_point'";
-	PGresult* res = DB->execQuery(SQL);
+bool getTaxiTrajectory(string filePath){
+	ifstream fin;
+	fin.open(filePath);
+	if(!fin) {
+		std::cerr<<"File open error!"<<endl;
+		fin.close();
+		return false;
+	}
+	else{
+		double lat,lon;
+		long long carID;
+		int y,mon,d,h,min,s;
+		char buff[100];
+		while(fin.getline(buff,100)){
+			sscanf_s(buff,"%lld,%d-%d-%d %d:%d:%d,%lf,%lf",&carID,&y,&mon,&d,&h,&min,&s,&lon,&lat);
+			P.push_back(GeoPoint(lat,lon,Date(y,mon,d,h,min,s)));
+		}
+	}
+	fin.close();
+	candiPoint.resize(P.size());
+	return true;
+}
+
+//把匹配选中的点，路径写入数据库
+void writeToDB(const vector <Point>& Traj){
+	//写入选中的候选点
+	string SQL = "select * from pg_class where relname = 'trajectory_point'";
+	PGresult* res = DB.execQuery(SQL);
 	int num = PQntuples(res);
 	PQclear(res);
 
 	if(num != 0){
-		SQL = "Delete from init_point";
-		DB->execUpdate(SQL);
+		SQL = "Delete from trajectory_point";
+		DB.execUpdate(SQL);
 	}
 	else{
-		SQL = "create table init_point (id integer primary key,year integer,month integer,day integer,hour integer,minute integer,second integer,way geometry(Point,4326))";
-		DB->execUpdate(SQL);
+		SQL = "create table trajectory_point (id integer primary key,way geometry(Point,4326))";
+		DB.execUpdate(SQL);
 	}
-	size_t sz = P.size();
-	char buffer[500];
+	size_t sz = Traj.size();
 
 	for(int i=0;i<sz;++i){
-		sprintf_s(buffer,"insert into init_point values(%d,%d,%d,%d,%d,%d,%d,ST_GeomFromText('Point(%lf %lf)',4326))",i+1,P[i].date.year,P[i].date.month,P[i].date.day,P[i].date.hour,P[i].date.minute,P[i].date.second,P[i].longitude,P[i].latitude);
+		sprintf_s(buffer,"insert into trajectory_point values(%d,ST_GeomFromText('Point(%lf %lf)',4326))",i+1,Traj[i].x,Traj[i].y);
 		SQL = buffer;
-		DB->execUpdate(SQL);
+		DB.execUpdate(SQL);
 	}
-}
 
-//把候选点存入数据库
-void loadCandiPoint(){
-	string SQL = "select * from pg_class where relname = 'candi_point'";
-	PGresult* res = DB->execQuery(SQL);
-	int num = PQntuples(res);
+	//写入匹配的轨迹
+	SQL = "select * from pg_class where relname = 'trajectory_line'";
+	res = DB.execQuery(SQL);
+	num = PQntuples(res);
 	PQclear(res);
 
 	if(num != 0){
-		SQL = "Delete from candi_point";
-		DB->execUpdate(SQL);
+		SQL = "Delete from trajectory_line";
+		DB.execUpdate(SQL);
 	}
 	else{
-		SQL = "create table candi_point (id integer primary key,belong integer,way geometry(Point,4326))";
-		DB->execUpdate(SQL);
+		SQL = "create table trajectory_line (id integer primary key,way geometry(LineString,4326))";
+		DB.execUpdate(SQL);
 	}
-	size_t sz = candiPoint.size();
-	char buffer[500];
+	sz = Traj.size();
+	int ID = 0;
+	int cnt = 0;
+	sprintf_s(buffer,"insert into trajectory_line values(%d,ST_GeomFromText('LineString(%.6f %.6f"
+		,ID++,Traj[0].x,Traj[0].y);
+	int baseLen = strlen(buffer);
+	for(int i=1;i<sz;++i)
+	{
+		//if(network->isInSameSeg(Traj[i-1].id,Traj[i].id))
+		//{
+		//	//in same seg
+		//	sprintf_s(buffer+cnt,BUFFSIZE-cnt,",%lf %lf",Traj[i].x,Traj[i].y);
+		//}
+		//else
+		{
+			vector <int> path = network->getPath(Traj[i-1],Traj[i]);
 
-	for(int i=0;i<sz;i++){
-		size_t candisz = candiPoint[i].size();
-		for(int j=0;j<candisz;++j){
-			sprintf_s(buffer,"insert into candi_point values(%d,%d,ST_GeomFromText('Point(%lf %lf)',4326))",candiPoint[i][j].id,i+1,candiPoint[i][j].x,candiPoint[i][j].y);
-			SQL = buffer;
-			DB->execUpdate(SQL);
-		}
-	}
-}
-
-//把数据库中读出的LINESTRING字符串转化为点坐标
-//返回点的vector
-vector < pair<double,double> > parseString(string str){
-	vector < pair<double,double> > res;
-	size_t len = str.size();
-	int pre = 11;
-	double x,y;
-	for(int i=0;i<len;++i){
-		if(str[i] == ',' || str[i] == ')'){
-			string tmp = str.substr(pre,i-pre);
-			//cerr<<tmp<<endl;
-			sscanf_s(tmp.c_str(),"%lf %lf",&x,&y);
-			res.push_back(make_pair(x,y));
-			pre = i+1;
-		}
-	}
-	return res;
-}
-
-//处理原始数据，把LineString中含有多于两个点的部分拆分后存入数据库
-//只需要运行一次
-int Insert(string SQL,int id){
-	PGresult* res = DB->execQuery(SQL);
-
-	int tupleNum = PQntuples(res);
-	int fieldNum = PQnfields(res);
-
-	for(int i=0;i<tupleNum;i++){
-		string content = PQgetvalue(res,i,fieldNum-1);
-		vector < pair<double,double> > pts = parseString(content);
-		size_t sz = pts.size();
-		for(int j=1;j<sz;j++){
-
-			SQL = "insert into network values(";
-			SQL += std::to_string(id++)+",0,0,";//id,source,target
-			SQL += PQgetvalue(res,i,0);//osm_id
-			SQL += ",";
-			for(int k=1;k<fieldNum;k++){
-
-				char * ss = PQgetvalue(res,i,k);
-				if(strlen(ss) == 0) 
-					SQL+="NULL";
-				else{
-					char * name = PQfname(res,k);
-					if(strcmp(name,"name") == 0 || strcmp(name,"tags") == 0){
-						SQL += "$$";
-						SQL += ss;
-						SQL += "$$";
-					}
-					else if(strcmp(name,"way") == 0){
-						SQL += "ST_geomFromText('LINESTRING(";
-						SQL += std::to_string(pts[j-1].first);
-						SQL += " ";
-						SQL += std::to_string(pts[j-1].second);
-						SQL += ",";
-						SQL += std::to_string(pts[j].first);
-						SQL += " ";
-						SQL += std::to_string(pts[j].second);
-						SQL += ")',900913)";
-					}
-					else{
-						SQL += "'";
-						SQL += ss;
-						SQL += "'";
-					}
+			if( ! path.empty()) {
+				//Point cur(network->getPointById(path[1]));
+				//sprintf_s(buffer+cnt,BUFFSIZE-cnt,",%lf %lf",cur.x,cur.y);
+				size_t psz = path.size();
+				for(int j=psz-2;j>0;--j){
+					Point cur = network->getPointById(path[j]);
+					cnt = strlen(buffer);
+					sprintf_s(buffer+cnt,BUFFSIZE-cnt,",%.6f %.6f",cur.x,cur.y);
 				}
-				if(k+1 == fieldNum) break;
-				SQL += ",";
+				cnt = strlen(buffer);
+				//cout<<cnt<<endl;
+				sprintf_s(buffer+cnt,BUFFSIZE-cnt,",%.6f %.6f",Traj[i].x,Traj[i].y);
 			}
-			SQL += ")";
-			//cerr<<SQL<<endl;
-			DB->execUpdate(SQL);
+			cnt = strlen(buffer);
+			if(cnt == baseLen){
+				sprintf_s(buffer+cnt,BUFFSIZE-cnt,",%.6f %.6f",Traj[i].x,Traj[i].y);
+			}
+			sprintf_s(buffer+cnt,BUFFSIZE-cnt,")',4326))");
+			SQL = buffer;
+			DB.execUpdate(buffer);
+			memset(buffer,0,sizeof(buffer));
+			sprintf_s(buffer,"insert into trajectory_line values(%d,ST_GeomFromText('LineString(%.6f %.6f"
+				,ID++,Traj[i].x,Traj[i].y);
 		}
 	}
-
-	PQclear(res);
-	return id;
-}
-
-void preProcData(){
-
-	string SQL = "select * from pg_class where relname = 'network'";
-	PGresult* res = DB->execQuery(SQL);
-	int num = PQntuples(res);
-	PQclear(res);
-
-	if(num != 0){
-		SQL = "Delete from network";
-		DB->execUpdate(SQL);
-	}
-	else{
-		SQL = "";
-		ifstream fin;
-		fin.open("createNetwork.txt");
-		string tmp;
-		while(fin>>tmp) SQL += tmp;
-		fin.close();
-		DB->execUpdate(SQL);
-	}
-
-	string Field = "";
-	SQL = "select * from allroads";
-	res = DB->execQuery(SQL);
-
-	int tupleNum = PQntuples(res);
-	int fieldNum = PQnfields(res);
-
-	for(int i=0;i<fieldNum-1;i++){
-		Field += "allroads.";
-		char * name = PQfname(res,i);
-		if(strstr(name,":") == NULL) 
-			Field += name;
-		else{
-			Field += "\"";
-			Field += name;
-			Field += "\"";
-		}
-		Field += ",";
-	}
-	Field += "ST_AsText(way) as way";
-	PQclear(res);
-	int id = 1;
-	id = Insert("select "+ Field + " from allroads",id);
+	//cout<<cnt<<endl;
+	//cnt = strlen(buffer);
+	//sprintf_s(buffer+cnt,BUFFSIZE-cnt,")',4326))");
+	//SQL = buffer;
+	//DB.execUpdate(SQL);
 }

@@ -54,10 +54,11 @@ void Graph::constructGraph(){
 	cerr<<"start construct graph"<<endl;
 	time_t tm = clock();
 	
-	char buff[500];
+	char buff[1000];
 	sprintf_s(buff,"select id,ST_AsText(ST_Transform(the_geom,4326)) from %s_vertices_pgr",roadTN.c_str());
 	string SQL = buff;
-	PGresult*  res = DB->execQuery(SQL);
+	Database DB;
+	PGresult*  res = DB.execQuery(SQL);
 	int tupleNum = n = PQntuples(res);
 	int id;
 
@@ -75,17 +76,18 @@ void Graph::constructGraph(){
 		sscanf_s(tmp.c_str(),"%d",&id);
 		tmp = PQgetvalue(res,i,1);
 		sscanf_s(tmp.c_str(),"POINT(%lf %lf)",&x,&y);
-		idToPoint[id] = Point(x,y);
+		idToPoint[id] = Point(x,y,id);
 	}
 	PQclear(res);
 	
-	sprintf_s(buff,"select source,target,ST_length(way),highway,gid,oneway from %s where highway <> '';",roadTN.c_str());
+	sprintf_s(buff,"select source,target,ST_length(way),highway,gid,oneway from %s where highway = 'secondary' or highway = 'primary' or highway = 'track' or highway = 'motorway' or highway = 'proposed' or highway = 'tertiary' or highway = 'trunk' or highway = 'tertiary_link' or highway = 'raceway' or highway = 'motorway_link' or highway = 'bridleway' or highway = 'secondary_link' or highway = 'primary_link' or highway = 'service' or highway = 'cycleway' or highway = 'trunk_link' or highway = 'road' or highway = 'residential';",roadTN.c_str());
 	SQL = buff;
-	res = DB->execQuery(SQL);
+	res = DB.execQuery(SQL);
 	tupleNum = PQntuples(res);
 	int st,ed;
 	double cost;
 	double v;
+	Road.resize(tupleNum);
 	for(int i=0;i<tupleNum;++i){
 		string tmp = PQgetvalue(res,i,0);
 		sscanf_s(tmp.c_str(),"%d",&st);
@@ -109,9 +111,9 @@ void Graph::constructGraph(){
 		tmp = PQgetvalue(res,i,5);
 		if(tmp != "yes")
 			edge[ed].push_back(EDGE(st,cost,v,idToPoint[st]));
+		//Point tPoint = idToPoint[st];
+		Road[id-1] = RoadSegment(idToPoint[st],idToPoint[ed],st,ed,id,v,tmp!="yes"?false:true);
 
-		Road.push_back(RoadSegment(idToPoint[st],idToPoint[ed],st,ed,id,v,tmp!="yes"?false:true));
-		idToidx[id] = i;
 	}
 	PQclear(res);
 
@@ -216,7 +218,13 @@ vector <double> Graph::getSegSpeed(int des){
 }
 
 Point Graph::getCandiPointById(int id){
-	return allCandiPoint[id];
+	try{
+		return allCandiPoint[id];
+	}
+	catch (exception e){
+		fprintf(stderr,"idx out of range when getCandiPointById %d\n",id);
+	}
+	return Point(0,0);
 }
 
 Point Graph::getPointById(int id){
@@ -244,10 +252,10 @@ vector < Point > Graph::getCandidate(Point p,double DIS,int K){
 		size_t sz = RoadIdxOfRegion[u].size();
 		for(int j=0;j<sz;++j){
 			//对最近点与p距离在R以内的点为候选点，为其分配ID，并加入所有候选点集
-			int idx = RoadIdxOfRegion[u][j];//分割的区域u中第j条道路在Road中的下标
-			int id = Road[idx].id;//此条道路的id
-			Point la = Road[idx].st;
-			Point lb = Road[idx].ed;
+			int id = RoadIdxOfRegion[u][j] - 1;//编号为id的路段在id-1储存
+			Point la = Road[id].st;
+			Point lb = Road[id].ed;
+			RoadSegment trd = Road[id];
 			double dis = dispToseg(p,la,lb);
 			if(dis <= DIS){
 				Point pivot(pToseg(p,la,lb));
@@ -277,6 +285,12 @@ vector < Point > Graph::getCandidate(Point p,double DIS,int K){
 
 //返回从t->s的路径上的点
 vector <int> Graph::getPath(Point t,Point s){
+	if(pInSeg[t.id] == pInSeg[s.id]){
+		vector <int> res;
+		res.push_back(s.id);
+		res.push_back(t.id);
+		return res;
+	}
 	getCandiShortest(t,s);
 	return getSegPoint(n-2);
 }
@@ -295,8 +309,8 @@ double Graph::getCandiShortest(Point t,Point s){
 		return tTosMin = getGeoDis(t,s);
 	}
 
-	RoadSegment Road1 = Road[idToidx[tid]];
-	RoadSegment Road2 = Road[idToidx[sid]];
+	RoadSegment Road1(Road[tid]);
+	RoadSegment Road2(Road[sid]);
 
 	int stID1 = Road1.stID;
 	int edID1 = Road1.edID;
@@ -371,7 +385,7 @@ DWORD WINAPI Graph::calc(LPVOID ptr){
 		Point pp = RegionCen[cur];
 		for(int j=0;j<rsz;++j){
 			if(R > dispToseg(pp,Road[j].st,Road[j].ed)){
-				RoadIdxOfRegion[cur].push_back(j);
+				RoadIdxOfRegion[cur].push_back(Road[j].id);
 			}
 		}
 		//cerr<<cur<<" done!"<<endl;
@@ -431,7 +445,7 @@ void Graph::writeToFile(){
 		int idxSz = (int)RoadIdxOfRegion[i].size();
 		fout<<idxSz<<endl;//每个区域有多少道路
 		for(int j=0;j<idxSz;++j){
-			fout<<RoadIdxOfRegion[i][j]<<" ";//每条道路的编号
+			fout<<RoadIdxOfRegion[i][j]<<" ";//每条道路的id
 		}
 	}
 	fout.close();
