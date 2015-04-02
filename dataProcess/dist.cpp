@@ -1,13 +1,15 @@
-// dataProcess.cpp : 定义控制台应用程序的入口点。
-//
-
-#include "stdafx.h"
+#include <bits/stdc++.h>
 using namespace std;
-const double mxV = 25;//m/s
-const double mnDis = 50;//m
-const double eps = 1e-18;//判定的误差
-const double PI = acos(-1.0);//圆周率
 
+//处理“飞点”，设定相邻两点之间速度的最大值
+//m/s
+#define UB 25
+//m
+#define LB 50
+
+const double eps = 1e-18;//判定的误差
+const double EARTH_RADIUS = 6378.137;//地球半径，km
+const double PI = acos(-1.0);//圆周率
 
 struct NODE{
     long long carID;
@@ -34,17 +36,13 @@ struct NODE{
 	}
 };
 
+vector <NODE> rec,ans;
+
 class Point{
 public:
     double x,y;
     Point(double x,double y):x(x),y(y){}
-	Point(const NODE& node){
-        x = node.logi;
-        y = node.lati;
-    }
 };
-
-vector <NODE> rec;
 
 //返回角度d的弧度
 inline double rad(double d){
@@ -66,63 +64,54 @@ double getGeoDis(Point pa,Point pb){
 	return sqrt(Lx * Lx + Ly * Ly);  // 用平面的矩形对角距离公式计算总距离
 }
 
-vector <NODE> speedProc(vector <NODE> &vec){
-	vector <NODE> res;
-	int sz = vec.size();
-	res.push_back(vec[0]);
-	for(int i=0;i<sz;++i){
-		NODE cur = vec[i];
-		NODE pre = res[res.size()-1];
-		//delete error point
-		if(pre == cur) continue;
-        //delete over speed point
-        if(getGeoDis(pre,cur)/(cur-pre) > mxV)
-            continue;
+char str[100];
 
-        res.push_back(cur);
-	}
-	return res;
-}
-
-vector <NODE> distProc(vector <NODE> &vec){
-	vector <NODE> res;
-	int sz = vec.size();
-	res.push_back(vec[0]);
-	for(int i=0;i<sz;++i){
-		NODE cur = vec[i];
-		NODE pre = res[res.size()-1];
-		if(getGeoDis(cur,pre) < mnDis)
-			continue;
-        res.push_back(cur);
-	}
-	return res;
-}
-
-int _tmain(int argc, _TCHAR* argv[])
-{
-	ifstream fin("input.csv");
-	if(!fin.is_open()){
-		cout<<"file open error!"<<endl;
-		return 0;
-	}
-	char str[100];
-	long long carID;
+int main(int argc, char** argv){
+    /*
+    if(argc != 2) {
+        fprintf(stderr,"add file path,like PreprocessData.exe yourfilepath\n");
+        return 0;
+    }*/
+    if(NULL == freopen(argv[1],"r",stdin)){
+        fprintf(stderr,"can not open %s\n",argv[1]);
+        return 0;
+    }
+    long long carID;
     int y,mon,d,h,m,s;
     double logi,lati;
-	while(fin.getline(str,100)){
-        sscanf_s(str,"%lld,%d-%d-%d %d:%d:%d,%lf,%lf",&carID,&y,&mon,&d,&h,&m,&s,&logi,&lati);
+    while(gets(str)){
+        sscanf(str,"%lld,%d-%d-%d %d:%d:%d,%lf,%lf",&carID,&y,&mon,&d,&h,&m,&s,&logi,&lati);
         rec.push_back(NODE(carID,y,mon,d,h,m,s,logi,lati));
     }
-	fin.close();
-	vector <NODE> res = speedProc(rec);
-	res = distProc(res);
-	ofstream fout("output.csv");
-	int sz = res.size();
-	for(int i=0,sz=res.size();i<sz;i++){
-		sprintf_s(str,"%lld,%d-%d-%d %d:%d:%d,%lf,%lf",res[i].carID,res[i].y,res[i].mon,res[i].d,res[i].h,res[i].m,res[i].s,res[i].logi,res[i].lati);
-        fout<<str<<endl;
+    fclose(stdin);
+    string filename = string("out_")+argv[1];
+    
+    freopen(filename.c_str(),"w",stdout);
+    if(rec.empty()) {
+        fclose(stdout);
+        return 0;
     }
-	fout.close();
-	return 0;
-}
+    int sz = rec.size();
+    ans.push_back(rec[0]);
 
+    for(int i=1;i<sz;i++){
+        NODE pre = ans[ans.size()-1];
+        NODE cur = rec[i];
+        //delete date&time same point
+        if(pre == cur) continue;
+        //delete error point
+        if(getGeoDis(Point(pre.logi,pre.lati),Point(cur.logi,cur.lati))/(cur-pre) > UB)
+            continue;
+        if(getGeoDis(Point(pre.logi,pre.lati),Point(cur.logi,cur.lati)) < LB)
+            continue;
+        
+        ans.push_back(cur);
+    }
+    sz = ans.size();
+    for(int i=0;i<sz;i++){
+        printf("%lld,%d-%d-%d %d:%d:%d,%lf,%lf\n",ans[i].carID,ans[i].y,ans[i].mon,ans[i].d,ans[i].h,ans[i].m,ans[i].s,ans[i].logi,ans[i].lati);
+    }
+
+    fclose(stdout);
+    return 0;
+}
