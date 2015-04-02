@@ -5,8 +5,6 @@
 #include "database.h"
 using namespace std;
 
-extern Database* DB;
-
 struct EDGE{
 	int v;//邻接边的点
 	double cost,speed;
@@ -19,7 +17,8 @@ struct RoadSegment{
 	double v;
 	bool oneway;
 	Point st,ed;
-	explicit RoadSegment(Point _st,Point _ed,int _stID,int _edID,int _id,double _v,bool _oneway):st(_st),ed(_ed),stID(_stID),edID(_edID),id(_id),v(_v),oneway(_oneway){}
+	RoadSegment(){}
+	RoadSegment(Point _st,Point _ed,int _stID,int _edID,int _id,double _v,bool _oneway):st(_st),ed(_ed),stID(_stID),edID(_edID),id(_id),v(_v),oneway(_oneway){}
 };
 struct NODE{
 	double first;
@@ -67,10 +66,9 @@ private:
 	vector <double> MinSpeed;
 
 	vector <Point> RegionCen;
-	vector <int> RoadIdxOfRegion[DIVID_NUM*DIVID_NUM];//记录区域内道路在Road的下标
+	vector <int> RoadIdxOfRegion[DIVID_NUM*DIVID_NUM];//记录区域内道路的id
 
-	map <int,Point> idToPoint;//所有点的映射，点id->Point
-	map <int,int> idToidx;//编号为id的Road在Road vector里的下标
+	map <int,Point> idToPoint;//所有道路网络点的映射，点id->Point
 	map <int,int> pInSeg;//对于candiPoint，PointID->roadID的映射，即某个候选点属于哪个路段
 	
 	bool* vis;//记录是否访问过
@@ -101,19 +99,12 @@ public:
 
 	Graph(string roadTN);
 	~Graph();
-
 	void reset();
-
 	vector < Point > Graph::getCandidate(Point p,double R,int K);
 	vector <int> getPath(Point t,Point s);
-
 	vector <double> getSpeed();//m/s
-
 	Point getCandiPointById(int id);
 	Point getPointById(int id);
-
 	double getCandiShortest(Point t,Point s);
-	
-
 	bool isInSameSeg(int id1,int id2);
 };
