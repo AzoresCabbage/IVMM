@@ -100,7 +100,7 @@ public:
 	Graph(string roadTN);
 	~Graph();
 	void reset();
-	vector < Point > Graph::getCandidate(Point p,double R,int K);
+	vector < Point > getCandidate(Point p,double R,int K);
 	vector <int> getPath(Point t,Point s);
 	vector <double> getSpeed();//m/s
 	Point getCandiPointById(int id);

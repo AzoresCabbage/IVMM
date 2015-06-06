@@ -89,14 +89,23 @@ void Database::loadInitPoint(const vector <GeoPoint>& P){
 	char buffer[500];
 
 	for(int i=0;i<sz;++i){
-		sprintf_s(buffer,"insert into init_point values(%d,%d,%d,%d,%d,%d,%d,ST_GeomFromText('Point(%lf %lf)',4326))",i+1,P[i].date.year,P[i].date.month,P[i].date.day,P[i].date.hour,P[i].date.minute,P[i].date.second,P[i].longitude,P[i].latitude);
+		sprintf_s(buffer,"insert into init_point values(%d,%d,%d,%d,%d,%d,%d,ST_GeomFromText('Point(%lf %lf)',4326))",
+			i+1,
+			P[i].date.year,
+			P[i].date.month,
+			P[i].date.day,
+			P[i].date.hour,
+			P[i].date.minute,
+			P[i].date.second,
+			P[i].longitude,
+			P[i].latitude);
 		SQL = buffer;
 		execUpdate(SQL);
 	}
 }
 
 //把候选点存入数据库
-void Database::loadCandiPoint(const vector < vector <Point> >& candiPoint){
+void Database::loadCandiPoint( vector < vector <Point> >& candiPoint){
 	string SQL = "select * from pg_class where relname = 'candi_point'";
 	PGresult* res = execQuery(SQL);
 	int num = PQntuples(res);
@@ -116,7 +125,11 @@ void Database::loadCandiPoint(const vector < vector <Point> >& candiPoint){
 	for(int i=0;i<sz;i++){
 		int candisz = (int)candiPoint[i].size();
 		for(int j=0;j<candisz;++j){
-			sprintf_s(buffer,"insert into candi_point values(%d,%d,ST_GeomFromText('Point(%lf %lf)',4326))",candiPoint[i][j].id,i+1,candiPoint[i][j].x,candiPoint[i][j].y);
+			sprintf_s(buffer,"insert into candi_point values(%d,%d,ST_GeomFromText('Point(%lf %lf)',4326))",
+				candiPoint[i][j].id,
+				i+1,
+				candiPoint[i][j].getLon(),
+				candiPoint[i][j].getLat());
 			SQL = buffer;
 			execUpdate(SQL);
 		}

@@ -28,6 +28,6 @@ public:
 	PGresult* execQuery(string SQL);
 	bool execUpdate(string SQL);
 	void loadInitPoint(const vector <GeoPoint>& P);
-	void loadCandiPoint(const vector < vector <Point> >& candiPoint);
+	void loadCandiPoint( vector < vector <Point> >& candiPoint);
 	void reOrder();
 };

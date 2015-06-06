@@ -238,7 +238,11 @@ vector < Point > Graph::getCandidate(Point p,double DIS,int K){
 	int regionsz = (int)RegionCen.size();
 	priority_queue < pair<double,int> > Q;
 	for(int i=0;i<regionsz;++i){
-		Q.push(make_pair(getGeoDis(p,RegionCen[i]),i));
+		/*double lon = p.getLon();
+		double lat = p.getLat();
+		double clon = RegionCen[i].getLon();
+		double clat = RegionCen[i].getLat();*/
+		Q.push(make_pair(p.EucDisTo(RegionCen[i]),i));
 		if(Q.size() > 4) Q.pop();
 	}
 
@@ -252,14 +256,14 @@ vector < Point > Graph::getCandidate(Point p,double DIS,int K){
 		int sz = (int)RoadIdxOfRegion[u].size();
 		for(int j=0;j<sz;++j){
 			//对最近点与p距离在R以内的点为候选点，为其分配ID，并加入所有候选点集
-			int id = RoadIdxOfRegion[u][j] - 1;//编号为id的路段在id-1储存
-			Point la = Road[id].st;
-			Point lb = Road[id].ed;
-			RoadSegment trd = Road[id];
+			int idx = RoadIdxOfRegion[u][j] - 1;//编号为id的路段在id-1储存
+			Point la = Road[idx].st;
+			Point lb = Road[idx].ed;
+			RoadSegment trd = Road[idx];
 			double dis = dispToseg(p,la,lb);
 			if(dis <= DIS){
 				Point pivot(pToseg(p,la,lb));
-				tmp.insert(TMP(dis,pivot,id));
+				tmp.insert(TMP(dis,pivot,idx));
 			}
 		}
 	}
@@ -306,7 +310,7 @@ double Graph::getCandiShortest(Point t,Point s){
 	int tid = pInSeg[t.id],sid = pInSeg[s.id];
 	if(tid == sid){
 		tTosSeg = 1;
-		return tTosMin = getGeoDis(t,s);
+		return tTosMin = t.EucDisTo(s);
 	}
 
 	RoadSegment Road1(Road[tid]);
@@ -322,10 +326,14 @@ double Graph::getCandiShortest(Point t,Point s){
 	Point ed2 = Road2.ed;
 
 	pre[n-1] = pre[n-2] = -1;
+	
 	if(fa[stID1] != fa[stID2]) return res;
+	if(fa[stID1] != fa[edID2]) return res;
+	if(fa[edID1] != fa[stID2]) return res;
+	if(fa[edID1] != fa[edID2]) return res;
 	//t's id -> n-1 , s'id -> n-2
-	double d1 = getGeoDis(t,st1);
-	double d2 = getGeoDis(t,ed1);
+	double d1 = t.EucDisTo(st1);
+	double d2 = t.EucDisTo(ed1);
 	edge[stID1].push_back(EDGE(n-1,d1,Road1.v,t));//src -> t
 	edge[n-1].push_back(EDGE(edID1,d2,Road1.v,ed1));//t -> des
 	if(!Road1.oneway){
@@ -333,8 +341,8 @@ double Graph::getCandiShortest(Point t,Point s){
 		edge[n-1].push_back(EDGE(stID1,d1,Road1.v,st1));//t -> src
 	}
 
-	d1 = getGeoDis(s,st2);
-	d2 = getGeoDis(s,ed2);
+	d1 = s.EucDisTo(st2);
+	d2 = s.EucDisTo(ed2);
 	edge[stID2].push_back(EDGE(n-2,d1,Road2.v,s));//src -> s
 	edge[n-2].push_back(EDGE(edID2,d2,Road2.v,ed2));//s -> des
 	if(!Road2.oneway){
@@ -414,7 +422,7 @@ void Graph::divideRegion(){
 		}
 	}
 
-	R = getGeoDis(Point(MinLon,MinLat),RegionCen[0]);
+	R = Point(MinLon,MinLat).EucDisTo(RegionCen[0]);
 	
 	iter = 0;
 
@@ -430,9 +438,13 @@ void Graph::divideRegion(){
 }
 
 void Graph::reset(){
+	//puts("1");
 	allCandiPoint.clear();
+	//puts("2");
 	MinSpeed.clear();
+	//puts("3");
 	pInSeg.clear();
+	//puts("4");
 	totCandiPoint = 0;
 }
 
@@ -441,7 +453,7 @@ void Graph::writeToFile(){
 	int sz = (int)RegionCen.size();
 	fout<<sz<<endl;//有几个区域
 	for(int i=0;i<sz;++i){
-		fout<<RegionCen[i].x<<" "<<RegionCen[i].y<<endl;//区域中心坐标
+		fout<<RegionCen[i].getLon()<<" "<<RegionCen[i].getLat()<<endl;//区域中心坐标
 		int idxSz = (int)RoadIdxOfRegion[i].size();
 		fout<<idxSz<<endl;//每个区域有多少道路
 		for(int j=0;j<idxSz;++j){
