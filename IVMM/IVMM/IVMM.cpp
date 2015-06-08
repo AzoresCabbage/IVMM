@@ -1,160 +1,83 @@
-//O(nk^2mlogm+nk^2)
-//n为轨迹点数
-//m为路段数
-//k为某个轨迹点的候选点数
-
 #include "stdafx.h"
-#include "geometry.h"
-#include "Graph.h"
-#include "database.h"
+#include "IVMM.h"
 using namespace std;
 
-//#define MYDEBUG
 #define BUFFSIZE 5000000
-class MAT{
-public:
-	double **mat;
-	int n,m;
-	MAT():n(0),m(0),mat(NULL){}
-	MAT(int _n,int _m):n(_n),m(_m),mat(NULL){
-		mat = new double*[n];
-		for(int i=0;i<n;++i){
-			mat[i] = new double[m];
-			memset(mat[i],0,sizeof(double)*m);
-		}
-	}
-	MAT& operator = (const MAT& x){
-		double** matOri = mat;
-		mat = new double*[x.n];
-		for(int i=0;i<x.n;++i){
-			mat[i] = new double[x.m];
-			for(int j=0;j<x.m;++j)
-				mat[i][j] = x.mat[i][j];
-		}
-		if(n && m && matOri != NULL){
-			for(int i=0;i<n;++i)
-				delete[] matOri[i];
-			delete[] matOri;
-		}
-		n = x.n;
-		m = x.m;
-		return *this;
-	}
-	~MAT(){
-		if(n && m && mat!=NULL){
-			for(int i=0;i<n;++i)
-				delete[] mat[i];
-			delete[] mat;
-		}
-	}
-};
-
-////////////////////config////////////////////////
-string dbname = "osm";//数据库名称
-string dbport = "5432";//数据库端口号
-string dbaddr = "127.0.0.1";//数据库地址
-string roadTN = "network";//道路表名称
-int threadNum = 1;//用于计算的线程数量
-int getCandiPointThreadNum = 1;
-double R = 50;//选取某轨迹点的候选点的范围，单位为m,对数据预处理时删去间距小于50的点
-double Sigma = 10;//正态分布，单位为m
-double miu = 5;
-int K = 5;//候选点最多的数量
-double beta = 7000;//m
-long long carID;
 char buffer[BUFFSIZE];
-//////////////////变量定义/////////////////////////
-//variable
-time_t tm;//计时变量
-double Coef;//norm distribution coef
-vector <GeoPoint> P;//轨迹点
-vector < vector <Point> > candiPoint;//每个轨迹点的候选点集合
-vector <MAT> M;
-vector <int> vote;
-vector <double> fvalue;
-//F是总代价:F = Fs*Ft
-map < pair<int,int> , double > F;
-Graph* network;
-//////////////////End/////////////////////////
 
-//////////not main logic func/////////////////
-bool readConfig();
-bool getTaxiTrajectory(string filePath);
-void writeToDB(vector <Point>& Traj,Database* DB,string tbname);
-void batchMatching(Database* DB);
-void writeToFile(vector <Point>& Traj,string path);
-//////////////////////////////////////////////
+mutex IVMM::lock_it;
+mutex IVMM::lockVote;
+int IVMM::it;
+double IVMM::R;
+double IVMM::Sigma;
+double IVMM::miu;
+int IVMM::K;
+double IVMM::beta;
+double IVMM::Coef;
+
+IVMM::IVMM(string _dbname,string _dbport,string _dbaddr,string _roadTN,
+		   double _R,double _sigma,double _miu,int _K,double _beta,
+		   int _threadNum,int _candiThreadNum):
+	dbname(_dbname),
+	dbport(_dbport),
+	dbaddr(_dbaddr),
+	roadTN(_roadTN),
+	threadNum(_threadNum),
+	getCandiPointThreadNum(_candiThreadNum)
+{
+	R = _R;
+	Sigma = _sigma;
+	miu = _miu;
+	K = _K;
+	beta = _beta;
+	DB = new Database();
+}
+
+IVMM::~IVMM()
+{
+	delete DB;
+}
 
 //初始化
 //读入轨迹，建立点的映射
-void init(){
-	//network.reset();
+void IVMM::init(){
 	Coef = 1/(sqrt(2*PI)*Sigma);
-	puts("clear");
-	P.clear();
-	candiPoint.clear();
-	F.clear();
-	M.clear();
-	vote.clear();
-	fvalue.clear();
-	puts("reset network begin");
-	network->reset();
-	puts("reset network done!");
+	data.reset();
 }
 
-double f(double x){
-	return exp(-SQR(x/beta));
-}
-
-//正态分布
-double N(int i,int t){
-	double x = candiPoint[i][t].EucDisTo(P[i]);
-	return Coef*exp(-SQR(x-miu)/(2*SQR(Sigma)));
-}
-
-//Transmission Probability
-//if t == s then return 1; because t must transmit s
-double V(double d,Point t,Point s){
-	if(t == s) return 1;
-	double tmp = network->getCandiShortest(t,s);
-	return d/tmp;
-}
-
-mutex lock_it;
-mutex lockVote;
-int it;
-DWORD WINAPI calc_candiPoint(LPVOID ptr){
-	int upd = (int)P.size();
+void IVMM::calc_candiPoint(
+	DATA &data
+	){
+	int upd = (int)data.P.size();
 	int cur;
 	while(true){
-		lock_it.lock();
-		if(it >= upd) {
-			lock_it.unlock();
-			return 0;
+		{
+			lock_guard<mutex> _(lock_it);
+			if(it >= upd) return ;
+			cur = it;
+			++it;
 		}
-		cur = it;
-		++it;
-		lock_it.unlock();
 		try{
-			vector <Point> tmp = network->getCandidate(P[cur],R,K);
-			candiPoint[cur] = tmp;
-			
+			vector <Point> tmp = data.network->getCandidate(data.P[cur],R,K);
+			data.candiPoint[cur] = tmp;
 		}
 		catch (exception e){
 			printf("%d error!",cur);
 		}
-		
 	}
 }
 
-//传入轨迹上每个点的候选点集合
-//计算F,Fs,Ft
-vector <Point> FindMatchedSequence(int i,int k,vector <MAT>& fi_i,vector <double>& Wi){
-	//tm = clock();
-	//std::cerr<<"start FindMatchedSequence "<<i<<" "<<k<<endl;
-	vector <Point> res;
 
-	int totCandiNum = network->totCandiPoint;
+void IVMM::FindMatchedSequence(
+	vector <Point>& res,
+	int i,
+	int k,
+	vector <MatrixXd>& fi_i,
+	vector <double>& Wi,
+	DATA &data
+	)
+{
+	int totCandiNum = data.network->totCandiPoint;
 	double *fmx = new double[totCandiNum];
 	int *pre = new int[totCandiNum];
 	
@@ -163,79 +86,59 @@ vector <Point> FindMatchedSequence(int i,int k,vector <MAT>& fi_i,vector <double
 	for(int t=0;t<totCandiNum;++t)
 		pre[t] = -1;
 
-	for(int t=0,sz=(int)candiPoint[0].size();t<sz;++t)
-		fmx[candiPoint[0][t].id] = Wi[0]*N(0,t);
+	for(int t=0,sz=(int)data.candiPoint[0].size();t<sz;++t)
+		fmx[data.candiPoint[0][t].id] = Wi[0]*N(0,t,data);
 	
 	if(i == 0){//i = 0,set init value be -max because there is no fi[i][0],only have fi[i][1]
-		for(int t=0,sz=(int)candiPoint[0].size();t<sz;++t){
+		for(int t=0,sz=(int)data.candiPoint[0].size();t<sz;++t){
 			if(t == k) continue;
-			fmx[candiPoint[0][t].id] = -1e300;
-		}
-	}
-	else{
-		for(int s = 0,sz=(int)candiPoint[i].size();s<sz;++s){
-			if(s == k) continue;
-			int tSz = 0;
-			if(i == 0) tSz = (int)candiPoint[i].size();
-			else tSz = (int)candiPoint[i-1].size();
-			for(int t=0;t<tSz;++t){
-				fi_i[i].mat[t][s] = -1e300;
-			}
+			fmx[data.candiPoint[0][t].id] = -1e300;
 		}
 	}
 	
-	int pNum = (int)P.size();
+	int pNum = (int)data.candiPoint.size();
 	for(int j=1;j<pNum;++j){
-		//printf("%d\n",j);
-		/*cout<<j<<" ";
-		cout<<fi[i][j-1].n<<" "<<fi[i][j-1].m<<" ";
-		cout<<candiPoint[j].size()<<" "<<candiPoint[j-1].size()<<endl;*/
-		for(int s = 0,ssz=(int)candiPoint[j].size();s<ssz;++s){
-			//printf("s = %d\n",s);
-			for(int t=0,tsz=(int)candiPoint[j-1].size();t<tsz;++t){
-				//printf("t = %d\n",t);
-				//assert(candiPoint[j][s].id < totCandiNum);
-				//assert(candiPoint[j-1][t].id < totCandiNum);
-				//assert(t < fi[i][j].n);
-				//assert(s < fi[i][j].m);
-				double fs = fmx[candiPoint[j][s].id];
-				double ft = fmx[candiPoint[j-1][t].id];
-				/*assert(t < fi[i][j].n);
-				assert(s < fi[i][j].m);
-				assert(i < fi.size());
-				assert(j < fi[i].size());
-				cout<<"n = "<<fi[i][j].n<<" m = "<<fi[i][j].m<<endl;
-				cout<<"i = "<<i<<" j = "<<j<<endl;*/
-				double fijts = fi_i[j].mat[t][s];
+		for(int s = 0,ssz=(int)data.candiPoint[j].size();s<ssz;++s){
+			for(int t=0,tsz=(int)data.candiPoint[j-1].size();t<tsz;++t){
+				double fs = fmx[data.candiPoint[j][s].id];
+				double ft = fmx[data.candiPoint[j-1][t].id];
+				double fijts = fi_i[j](t,s);
+				if(i == j)
+				{
+					if(s != k)
+					{
+						fijts = -1e300;
+					}
+				}
 				if(fs < ft+fijts){
-					fmx[candiPoint[j][s].id] = ft+fijts;
-					pre[candiPoint[j][s].id] = candiPoint[j-1][t].id;
+					fmx[data.candiPoint[j][s].id] = ft+fijts;
+					pre[data.candiPoint[j][s].id] = data.candiPoint[j-1][t].id;
 				}
 			}
 		}
 	}
 	
 	
-	double mx = fmx[candiPoint[pNum-1][0].id];
-	int c = candiPoint[pNum-1][0].id;
-	for(int s=0,sz=(int)candiPoint[pNum-1].size();s<sz;++s){
-		if(mx < fmx[candiPoint[pNum-1][s].id]){
-			mx = fmx[candiPoint[pNum-1][s].id];
-			c = candiPoint[pNum-1][s].id;
+	double mx = fmx[data.candiPoint[pNum-1][0].id];
+	int c = data.candiPoint[pNum-1][0].id;
+	for(int s=0,sz=(int)data.candiPoint[pNum-1].size();s<sz;++s){
+		if(mx < fmx[data.candiPoint[pNum-1][s].id]){
+			mx = fmx[data.candiPoint[pNum-1][s].id];
+			c = data.candiPoint[pNum-1][s].id;
 		}
 	}
 	
 	res.resize(pNum);
-	fvalue[candiPoint[i][k].id] = mx;
+	data.fvalue[data.candiPoint[i][k].id] = mx;
 	for(int s = pNum-1;s>0;--s){
 		if(c == -1)
 		{// error
 			delete[] pre;
 			delete[] fmx;
 			res.clear();
-			return res;
+			return ;
 		}
-		res[s] = network->getCandiPointById(c);
+		res[s] = data.network->getCandiPointById(c);
 		c = pre[c];
 	}
 	
@@ -244,241 +147,167 @@ vector <Point> FindMatchedSequence(int i,int k,vector <MAT>& fi_i,vector <double
 		delete[] pre;
 		delete[] fmx;
 		res.clear();
-		return res;
+		return ;
 	}
-	res[0] = network->getCandiPointById(c);
+	res[0] = data.network->getCandiPointById(c);
 	delete[] pre;
 	delete[] fmx;
-
-	//reverse(res.begin(),res.end());
-	//std::cerr<<"FindMatchedSequence cost = "<<clock()-tm<<"ms"<<endl;
-	return res;
+	return ;
 }
 
-DWORD WINAPI interactiveVoting(LPVOID ptr){
-	int upbound = (int)P.size();
+void IVMM::interactiveVoting(
+	DATA& data
+	){
+	int upbound = (int)data.P.size();
 	int cur = 0;
 	while(true)
 	{
-		lock_it.lock();
-		if(it >= upbound) {
-			lock_it.unlock();
-			return 0;
+		{
+			lock_guard<mutex> _(lock_it);
+			if(it >= upbound) return ;
+			cur = it;
+			++it;
 		}
-		cur = it;
-		++it;
-		lock_it.unlock();
-#ifdef MYDEBUG
-		fprintf(stderr,"W[%d] = ",cur);
-#endif
 		//fprintf(stderr,"%d start voting...\n",cur);
 		vector <double> W;
 		W.resize(upbound);
 		for(int j=0;j<upbound;++j){
-			W[j] = f(Point(P[cur]).EucDisTo(P[j]));
-#ifdef MYDEBUG
-			fprintf(stderr,"%lf ",W[j]);
-#endif
+			W[j] = f(Point(data.P[cur]).EucDisTo(data.P[j]));
 		}
-#ifdef MYDEBUG
-		fprintf(stderr,"\n");
-
-		fprintf(stderr,"fi[%d] = ",cur);
-#endif
-		vector <MAT> fi;
+		vector <MatrixXd> fi;
 		fi.resize(upbound);
 		for(int j=1;j<upbound;++j){//j indicate M^j , not exist M^1
-			MAT tMat(M[j].n,M[j].m);
-#ifdef MYDEBUG
-			fprintf(stderr,"j = %d\n",j);
-#endif
-			//assert(j < M.size());
 			if(j-1 < cur){
-				for(int t = 0;t<tMat.n;++t){
-					for(int s=0;s<tMat.m;++s){
-						tMat.mat[t][s] = W[j-1]*M[j].mat[t][s];
-#ifdef MYDEBUG
-						fprintf(stderr,"%lf ",tMat.mat[t][s]);
-#endif
-					}
-#ifdef MYDEBUG
-					fprintf(stderr,"\n");
-#endif
-				}
+				fi[j] = W[j-1]*data.M[j];
 			}
 			else{
-				for(int t = 0;t<tMat.n;++t){
-					for(int s=0;s<tMat.m;++s){
-						tMat.mat[t][s] = W[j]*M[j].mat[t][s];
-#ifdef MYDEBUG
-						fprintf(stderr,"%lf ",tMat.mat[t][s]);
-#endif
-					}
-#ifdef MYDEBUG
-					fprintf(stderr,"\n");
-#endif
-				}
+				fi[j] = W[j]*data.M[j];
 			}
-			fi[j] = tMat;
 		}
-		//printf("%d\n",cur);
-		for(int j=0;j<(int)candiPoint[cur].size();++j){
-			vector <MAT> tFi;
-			tFi.resize(fi.size());
-			for(int i=0,num=(int)fi.size();i<num;++i)
-				tFi[i] = fi[i];
-			vector <Point> Seq = FindMatchedSequence(cur,j,tFi,W);
+
+		for(int j=0,candiSize=(int)data.candiPoint[cur].size();j<candiSize;++j){
+			vector <Point> Seq;
+			FindMatchedSequence(Seq,cur,j,fi,W,data);
 			
-			lockVote.lock();
-#ifdef MYDEBUG
-			cerr<<"candi id = "<<candiPoint[cur][j].id<<endl;
-#endif
+			lock_guard<mutex> _(lockVote);
 			for(int k=0,sz=(int)Seq.size();k<sz;++k)
 			{
-#ifdef MYDEBUG
-				cerr<<Seq[k].id<<" ";
-#endif
-				++ vote[Seq[k].id];
+				++ data.vote[Seq[k].id];
 			}
-#ifdef MYDEBUG
-			cerr<<endl;
-#endif
-			lockVote.unlock();
-			Seq.clear();
 		}
 	}
 }
 
-vector <Point> IVMM(Database* DB){
+void IVMM::solve(vector <Point>& res){
 	//O(nm) for every point in Trajectory find the candipoint set
 	std::cerr<<"start getCandiPoint"<<endl;
 	tm = clock();
 
 	//////////并行计算candipoint，初始化it
-	it= 0;
-	HANDLE *handle = new HANDLE[getCandiPointThreadNum];
-	for(int i=0;i<getCandiPointThreadNum;++i){
-		handle[i] = CreateThread(NULL,0,calc_candiPoint,NULL,0,NULL);
-	}
-	for(int i=0;i<getCandiPointThreadNum;++i){
-		WaitForSingleObject(handle[i],INFINITE);
-	}
-	delete[] handle;
+	it = 0;
+	thread *threadGetCandi = new thread[getCandiPointThreadNum];
+	for(int i=0;i<getCandiPointThreadNum;++i)
+		threadGetCandi[i] = thread(calc_candiPoint,ref(data));
+	for(int i=0;i<getCandiPointThreadNum;++i)
+		threadGetCandi[i].join();
+	delete []threadGetCandi;
 	std::cerr<<"getCandidate cost = "<<clock()-tm<<"ms"<<endl;
 
+	int pNum = (int)data.P.size();
 
 	//删去为候选点为0的点
 	try{
 		vector <int> noCandiPointIdx;
-		for(int i=0,pNum = (int)P.size();i<pNum;++i){
-			if(candiPoint[i].empty()){
+		for(int i=0;i<pNum;++i){
+			if(data.candiPoint[i].empty()){
 				noCandiPointIdx.push_back(i);
 			}
 		}
-		if(noCandiPointIdx.size() == P.size())
+		if(noCandiPointIdx.size() == pNum)
 			exit(-1);
 		for(int i=(int)noCandiPointIdx.size()-1;i >= 0;--i){
-			P.erase(P.begin()+noCandiPointIdx[i]);
-			candiPoint.erase(candiPoint.begin()+noCandiPointIdx[i]);
+			data.P.erase(data.P.begin()+noCandiPointIdx[i]);
+			data.candiPoint.erase(data.candiPoint.begin()+noCandiPointIdx[i]);
 		}
 	}
 	catch (exception e){
 		fprintf(stderr,"erase point error! %s\n",e);
 	}
 
-	DB->loadInitPoint(P);
-	DB->loadCandiPoint(candiPoint);
+	//DB->loadInitPoint(data.P);
+	//DB->loadCandiPoint(data.candiPoint);
 
-	int pNum = (int)P.size();
+	//更新pNum
+	pNum = (int)data.P.size();
 
 	//计算M矩阵,不计算Ft
 	//M[i][j]表示只考虑两个候选点i,j时,当j是由i转移过来并且为正确点的概率
-	M.resize(pNum);
+	data.M.resize(pNum);
 	//特殊处理第一个矩阵为单位阵表示从自己到自己为正确点的概率为1
-	MAT mat((int)candiPoint[0].size(),(int)candiPoint[0].size());
-	for(int i=0;i<mat.n;++i)
-		for(int j=0;j<mat.m;++j)
-			mat.mat[i][j] = i==j?1:0;
-	M[0] = mat;
+	int candi0size = (int)data.candiPoint[0].size();
+	MatrixXd mat = MatrixXd::Identity(candi0size,candi0size);
+
+	data.M[0] = mat;
 
 	std::cerr<<"start calc Matrix M"<<endl;
 	for(int i=1;i<pNum;++i){
-		//std::cerr<<"start calc Matrix M "<<i<<endl;
-		int nPre = (int)candiPoint[i-1].size();
-		int nCur = (int)candiPoint[i].size();
-		MAT tMat(nPre,nCur);
-#ifdef MYDEBUG
-		fprintf(stderr,"M[%d] = \n",i);
-#endif
+		int nPre = (int)data.candiPoint[i-1].size();
+		int nCur = (int)data.candiPoint[i].size();
+		MatrixXd tMat(nPre,nCur);
 		for(int t = 0;t<nPre;++t){
 			for(int s=0;s<nCur;++s){
-				//printf("%d %d\n",t,s);
-				tMat.mat[t][s] = N(i,s)
-					*V(Point(P[i-1]).EucDisTo(Point(P[i])),candiPoint[i-1][t],candiPoint[i][s]);
-#ifdef MYDEBUG
-				fprintf(stderr,"%lf ",tMat.mat[t][s]);
-#endif
+				tMat(t,s) = N(i,s,data)
+					*V(Point(data.P[i-1]).EucDisTo(Point(data.P[i])),data.candiPoint[i-1][t],data.candiPoint[i][s]);
 			}
-#ifdef MYDEBUG
-			fprintf(stderr,"\n");
-#endif
 		}
-		M[i] = tMat;
+		data.M[i] = tMat;
 	}
 	std::cerr << "calc Matrix M cost = "<<clock() - tm<<"ms"<<endl;
 
 	//calc seq
-	int totCandiNum = network->totCandiPoint;
-	fvalue.resize(totCandiNum);
-	vote.resize(totCandiNum);
+	int totCandiNum = data.network->totCandiPoint;
+	data.fvalue.resize(totCandiNum);
+	data.vote.resize(totCandiNum);
 
 	/////////////并行计算，初始化it
 	std::cerr<<"start interactive voting"<<endl;
 	tm = clock();
 	it = 0;
-	handle = new HANDLE[threadNum];
-	for(int i=0;i<threadNum;++i){
-		handle[i] = CreateThread(NULL,0,interactiveVoting,NULL,0,NULL);
-	}
-	for(int i=0;i<threadNum;++i){
-		WaitForSingleObject(handle[i],INFINITE);
-	}
-	delete[] handle;
+	thread *threadVote = new thread[threadNum];
+	for(int i=0;i<threadNum;++i)
+		threadVote[i] = thread(interactiveVoting,ref(data));
+	for(int i=0;i<threadNum;++i)
+		threadVote[i].join();
+	delete []threadVote;
 	std::cerr<<"interactive voting cost = "<<clock()-tm<<"ms"<<endl;
 
-	vector <Point> res;
 	for(int i=0;i<pNum;++i){
 		int mx = 0;
 		double mxFval = 0;
 		int pos = 0;
-		for(int j=0;j<(int)candiPoint[i].size();++j){
-			if(mx < vote[candiPoint[i][j].id] 
-			|| (mx == vote[candiPoint[i][j].id] && mxFval < fvalue[candiPoint[i][j].id])
+		for(int j=0,candiSize=(int)data.candiPoint[i].size();j<candiSize;++j){
+			if(mx < data.vote[data.candiPoint[i][j].id] 
+			|| (mx == data.vote[data.candiPoint[i][j].id] && mxFval < data.fvalue[data.candiPoint[i][j].id])
 				){
-				mx = vote[candiPoint[i][j].id];
+				mx = data.vote[data.candiPoint[i][j].id];
 				pos = j;
-				mxFval = fvalue[candiPoint[i][j].id];
+				mxFval = data.fvalue[data.candiPoint[i][j].id];
 			}
 		}
-		res.push_back(candiPoint[i][pos]);
+		res.push_back(data.candiPoint[i][pos]);
 	}
-	/*ofstream fout("vote.txt");
-	for(int i=0;i<vote.size();++i)
-		fout<<vote[i]<<endl;
-	fout.close();*/
-	return res;
+	return ;
 }
 
-vector <Point> dealFlyPoint(vector <Point> Ori){
-	vector <Point> res;
+void IVMM::dealFlyPoint(vector <Point>& Ori,vector <Point>& res){
 	res.push_back(Ori[0]);
 	const double LimitV = 25;
 	int sz = (int)Ori.size();
 	for(int i=1;i<sz;++i){
-		double dis = network->getCandiShortest(Ori[i-1],Ori[i]);
-		double span = P[i].date - P[i-1].date;
+		double dis = data.network->getCandiShortest(Ori[i-1],Ori[i]);
+		double span = data.P[i].date - data.P[i-1].date;
 		if(dis / span > LimitV){
-			if(i-2>=0 && ( network->getCandiShortest(Ori[i-2],Ori[i])/(P[i].date - P[i-2].date) ) < LimitV){
+			if(i-2>=0 && ( data.network->getCandiShortest(Ori[i-2],Ori[i])/(data.P[i].date - data.P[i-2].date) ) < LimitV){
 				res.pop_back();
 				res.push_back(Ori[i]);
 				continue;
@@ -488,112 +317,58 @@ vector <Point> dealFlyPoint(vector <Point> Ori){
 		}
 		res.push_back(Ori[i]);
 	}
-	return res;
+	return ;
 }
 
-int _tmain(int argc, _TCHAR* argv[]){
+void IVMM::batchMatching(string filepath)
+{
+	double lat,lon;
+	int y,mon,d,h,min,s;
+	char buff[100];
 
-	/*Point a(116.4157392,39.85634553);
-	Point b(116.4156834,39.85768043);
-	Point p(116.415703,39.857262);
-
-	cout<<a.getLon()<<" "<<a.getLat()<<endl;
-
-	cout<<dispToseg(p,a,b)<<endl;
-
-	double p1 = a.EucDisTo(b);
-	double p2 = p.EucDisTo(a);
-	double p3 = p.EucDisTo(b);
-	double P = (p1+p2+p3)/2;
-	double s = sqrt(P*(P-p1)*(P-p2)*(P-p3));
-	double h = s/p1*2;
-	cout<<p1<<" "<<p2<<" "<<p3<<" "<<h<<endl;
-	return 0;*/
-
-	network = new Graph(roadTN);
-	Database* DB = new Database();
-	batchMatching(DB);
-	return 0;
-
-	//string basePath;
-	////cerr<<"please input file path:";
-	////while(cin>>basePath)
-	//basePath = "input.txt";
-	//{
-	//	cerr<<"start init..."<<endl;
-	//	tm = clock();
-	//	init();
-	//  getTaxiTrajectory(basePath);
-	//	cerr<<"init cost "<<clock()-tm<<"ms"<<endl;
-	//	vector <Point> res = IVMM(DB);
-	//	res = dealFlyPoint(res);
-	//	cerr<<"start writeToDB->.."<<endl;
-	//	tm = clock();
-	//	writeToDB(res,DB,"Trajectory");
-	//	cerr<<"writeToDB cost "<<clock()-tm<<"ms"<<endl;
-	//	cerr<<"please input file path:";
-	//}
-	//return 0;
-}
-
-bool readConfig(){
-	ifstream fin;
-	fin.open("config.ini");
-	if(!fin.is_open()){
-		cerr <<"can't open config.ini"<<endl;
-		return false;
-	}
-	int cnt = 0;
-	string line,prop;
-	while(fin >> line){
-		if(line == "" || line[0] == '#')
-			continue;
-		prop = line;
-		fin>>line;
-		fin>>line;
-		cnt++;
-		if(prop == "dbname")
-			dbname = line;
-		else if(prop == "dbport"){
-			dbport = line;
+	init();
+	//ifstream fin("E:/research/data/out_20131017GPS/13311300594.csv");
+	//ifstream fin("E:/research/data/day.csv");
+	//ifstream fin("input.txt");
+	ifstream fin(filepath.c_str());
+	fin.getline(buff,100);
+	sscanf_s(buff,"%lld,%d-%d-%d %d:%d:%d,%lf,%lf",&carID,&y,&mon,&d,&h,&min,&s,&lon,&lat);
+	data.P.push_back(GeoPoint(lat,lon,Date(y,mon,d,h,min,s)));
+	long long pre = carID;
+	while(fin.getline(buff,100)){
+		sscanf_s(buff,"%lld,%d-%d-%d %d:%d:%d,%lf,%lf",&carID,&y,&mon,&d,&h,&min,&s,&lon,&lat);
+		if(pre == carID)
+		{
+			data.P.push_back(GeoPoint(lat,lon,Date(y,mon,d,h,min,s)));
 		}
-		else if(prop == "dbaddr"){
-			dbaddr = line;
-		}
-		else if(prop == "roadTN"){
-			roadTN = line;
-		}
-		else if(prop == "threadnum"){
-			int tmp;
-			sscanf_s(line.c_str(),"%d",&tmp);
-			threadNum = tmp;
-		}
-		else if(prop == "K"){
-			int tmp;
-			sscanf_s(line.c_str(),"%d",&tmp);
-			K = tmp;
-		}
-		else if(prop == "R"){
-			double tmp;
-			sscanf_s(line.c_str(),"%lf",&tmp);
-			R = tmp;
-		}
-		else if(prop == "sigma"){
-			double tmp;
-			sscanf_s(line.c_str(),"%lf",&tmp);
-			Sigma = tmp;
+		else
+		{
+			data.candiPoint.resize(data.P.size());
+			vector <Point> tmp,res;
+			solve(tmp);
+			puts("start deal fly point");
+			dealFlyPoint(tmp,res);
+			puts("start write to db");
+			writeToDB(res,::to_string(pre));
+			printf("tra %lld done!\n",pre);
+			init();
+			data.P.push_back(GeoPoint(lat,lon,Date(y,mon,d,h,min,s)));
+			pre = carID;
 		}
 	}
+	data.candiPoint.resize(data.P.size());
+	vector <Point> tmp,res;
+	solve(tmp);
+	puts("start deal fly point");
+	dealFlyPoint(tmp,res);
+	puts("start write to db");
+	writeToDB(res,::to_string(carID));
+	init();
+
 	fin.close();
-	if(cnt == 8) 
-		return true;
-	else{
-		cerr<<"config.ini corrupted！"<<endl;
-		return false;
-	}
 }
 
-bool getTaxiTrajectory(string filePath){
+bool IVMM::getTaxiTrajectory(string filePath){
 	ifstream fin;
 	fin.open(filePath);
 	if(!fin) {
@@ -607,16 +382,16 @@ bool getTaxiTrajectory(string filePath){
 		char buff[100];
 		while(fin.getline(buff,100)){
 			sscanf_s(buff,"%lld,%d-%d-%d %d:%d:%d,%lf,%lf",&carID,&y,&mon,&d,&h,&min,&s,&lon,&lat);
-			P.push_back(GeoPoint(lat,lon,Date(y,mon,d,h,min,s)));
+			data.P.push_back(GeoPoint(lat,lon,Date(y,mon,d,h,min,s)));
 		}
 	}
 	fin.close();
-	candiPoint.resize(P.size());
+	data.candiPoint.resize(data.P.size());
 	return true;
 }
 
 //把匹配选中的点，路径写入数据库
-void writeToDB(vector <Point>& Traj,Database* DB,string tbname){
+void IVMM::writeToDB(vector <Point>& Traj,string tbname){
 	//写入选中的候选点
 	string SQL = "select * from pg_class where relname = 'point_" + tbname + "'";
 	PGresult* res = DB->execQuery(SQL);
@@ -703,14 +478,14 @@ void writeToDB(vector <Point>& Traj,Database* DB,string tbname){
 		//}
 		//else
 		{
-			vector <int> path = network->getPath(Traj[i-1],Traj[i]);
+			vector <int> path = data.network->getPath(Traj[i-1],Traj[i]);
 
 			if( ! path.empty()) {
 				//Point cur(network->getPointById(path[1]));
 				//sprintf_s(buffer+cnt,BUFFSIZE-cnt,",%lf %lf",cur.x,cur.y);
 				size_t psz = path.size();
 				for(int j=psz-2;j>0;--j){
-					Point cur = network->getPointById(path[j]);
+					Point cur = data.network->getPointById(path[j]);
 					cnt = strlen(buffer);
 					sprintf_s(buffer+cnt,BUFFSIZE-cnt,",%.6f %.6f",
 						cur.getLon(),
@@ -745,19 +520,19 @@ void writeToDB(vector <Point>& Traj,Database* DB,string tbname){
 	}
 }
 
-void writeToFile(vector <Point>& Traj,string path)
+void IVMM::writeToFile(vector <Point>& Traj,string path)
 {
 	ofstream fout(path.c_str());
 	for(int i=0,sz=Traj.size();i<sz;++i)
 	{
 		sprintf_s(buffer,"%lld,%d-%d-%d %d:%d:%d,%lf,%lf",
 			carID,
-			P[i].date.year,
-			P[i].date.month,
-			P[i].date.day,
-			P[i].date.hour,
-			P[i].date.minute,
-			P[i].date.second,
+			data.P[i].date.year,
+			data.P[i].date.month,
+			data.P[i].date.day,
+			data.P[i].date.hour,
+			data.P[i].date.minute,
+			data.P[i].date.second,
 			Traj[i].getLon(),
 			Traj[i].getLat());
 		fout<<buffer<<endl;
@@ -765,49 +540,20 @@ void writeToFile(vector <Point>& Traj,string path)
 	fout.close();
 }
 
+double IVMM::f(double x){
+	return exp(-SQR(x/beta));
+}
 
-void batchMatching(Database* DB)
-{
-	
-	double lat,lon;
-	int y,mon,d,h,min,s;
-	char buff[100];
+//正态分布
+double IVMM::N(int i,int t,DATA& data){
+	double x = data.candiPoint[i][t].EucDisTo(data.P[i]);
+	return Coef*exp(-SQR(x-miu)/(2*SQR(Sigma)));
+}
 
-	init();
-	//ifstream fin("E:/research/data/out_20131017GPS/13311300594.csv");
-	//ifstream fin("E:/research/data/day.csv");
-	ifstream fin("input.txt");
-	fin.getline(buff,100);
-	sscanf_s(buff,"%lld,%d-%d-%d %d:%d:%d,%lf,%lf",&carID,&y,&mon,&d,&h,&min,&s,&lon,&lat);
-	P.push_back(GeoPoint(lat,lon,Date(y,mon,d,h,min,s)));
-	long long pre = carID;
-	while(fin.getline(buff,100)){
-		sscanf_s(buff,"%lld,%d-%d-%d %d:%d:%d,%lf,%lf",&carID,&y,&mon,&d,&h,&min,&s,&lon,&lat);
-		if(pre == carID)
-		{
-			P.push_back(GeoPoint(lat,lon,Date(y,mon,d,h,min,s)));
-		}
-		else
-		{
-			candiPoint.resize(P.size());
-			vector <Point> res = IVMM(DB);
-			puts("start deal fly point");
-			res = dealFlyPoint(res);
-			puts("start write to db");
-			writeToDB(res,DB,::to_string(pre));
-			printf("tra %lld done!\n",pre);
-			init();
-			P.push_back(GeoPoint(lat,lon,Date(y,mon,d,h,min,s)));
-			pre = carID;
-		}
-	}
-	candiPoint.resize(P.size());
-	vector <Point> res = IVMM(DB);
-	puts("start deal fly point");
-	res = dealFlyPoint(res);
-	puts("start write to db");
-	writeToDB(res,DB,::to_string(carID));
-	init();
-
-	fin.close();
+//Transmission Probability
+//if t == s then return 1; because t must transmit s
+double IVMM::V(double d,Point& t,Point& s){
+	if(t == s) return 1;
+	double tmp = data.network->getCandiShortest(t,s);
+	return d/tmp;
 }

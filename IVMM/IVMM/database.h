@@ -29,5 +29,4 @@ public:
 	bool execUpdate(string SQL);
 	void loadInitPoint(const vector <GeoPoint>& P);
 	void loadCandiPoint( vector < vector <Point> >& candiPoint);
-	void reOrder();
 };

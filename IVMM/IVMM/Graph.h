@@ -5,45 +5,6 @@
 #include "database.h"
 using namespace std;
 
-struct EDGE{
-	int v;//邻接边的点
-	double cost,speed;
-	Point pts;
-	EDGE(int _v,double _cost,double _speed,Point _pts):v(_v),cost(_cost),speed(_speed),pts(_pts){}
-};
-struct RoadSegment{
-	int stID,edID;
-	int id;
-	double v;
-	bool oneway;
-	Point st,ed;
-	RoadSegment(){}
-	RoadSegment(Point _st,Point _ed,int _stID,int _edID,int _id,double _v,bool _oneway):st(_st),ed(_ed),stID(_stID),edID(_edID),id(_id),v(_v),oneway(_oneway){}
-};
-struct NODE{
-	double first;
-	int second;
-	NODE(double _f,int _s):first(_f),second(_s){};
-	bool operator < (const NODE& x) const{
-		return first > x.first;
-	}
-};
-
-//筛选轨迹点的候选点的数据结构
-struct TMP{
-	double dis;
-	Point pts;
-	int rid;
-	TMP(double _dis,Point _pts,int _rid):dis(_dis),pts(_pts),rid(_rid){}
-	bool operator < (const TMP& t)const{
-		if(dis == t.dis){
-			if(pts == t.pts) return rid < t.rid;
-			else return pts < t.pts;
-		}
-		else
-			return dis < t.dis;
-	}
-};
 
 //把地图分为DIVID_NUM*DIVID_NUM个区域
 //取值为40时，求40个candiPoint需要2s
@@ -57,6 +18,47 @@ const double MinLat = 39.4;
 const double MaxLat = 41.6;
 class Graph{
 private:
+	//筛选轨迹点的候选点的数据结构
+	struct TMP{
+		double dis;
+		Point pts;
+		int rid;
+		TMP(double _dis,Point _pts,int _rid):dis(_dis),pts(_pts),rid(_rid){}
+		bool operator < (const TMP& t)const{
+			if(dis == t.dis){
+				if(pts == t.pts) return rid < t.rid;
+				else return pts < t.pts;
+			}
+			else
+				return dis < t.dis;
+		}
+	};
+	struct EDGE{
+		int v;//邻接边的点
+		double cost,speed;
+		Point pts;
+		EDGE(int _v,double _cost,double _speed,Point _pts):v(_v),cost(_cost),speed(_speed),pts(_pts){}
+	};
+	struct RoadSegment{
+		int stID,edID;
+		int id;
+		double v;
+		bool oneway;
+		Point st,ed;
+		RoadSegment(){}
+		RoadSegment(Point _st,Point _ed,int _stID,int _edID,int _id,double _v,bool _oneway):st(_st),ed(_ed),stID(_stID),edID(_edID),id(_id),v(_v),oneway(_oneway){}
+	};
+	struct NODE{
+		double first;
+		int second;
+		NODE(double _f,int _s):first(_f),second(_s){};
+		bool operator < (const NODE& x) const{
+			return first > x.first;
+		}
+	};
+
+	static mutex mylock;
+	static int iter;
 	static const int threadNum = 4;
 	int n;//图中点总数
 	string roadTN;
@@ -70,7 +72,7 @@ private:
 
 	map <int,Point> idToPoint;//所有道路网络点的映射，点id->Point
 	map <int,int> pInSeg;//对于candiPoint，PointID->roadID的映射，即某个候选点属于哪个路段
-	
+
 	bool* vis;//记录是否访问过
 	double* dis;//到src的距离
 	int* pre;//记录最短路路径
@@ -88,7 +90,7 @@ private:
 	int getSegNum(int des);//返回终点编号为des的最短路有多少边
 	double queryShortest(int id1,int id2,Point S,Point T);
 	double shortest_path(int S,int T);//返回编号为S到编号为T的最短路长度
-	static DWORD WINAPI calc(LPVOID);
+	static void calc(const vector <Point>& ,const vector <RoadSegment>& ,vector <int> *,double );
 	void writeToFile();
 	bool readFile();
 public:

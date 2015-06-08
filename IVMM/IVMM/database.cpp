@@ -265,16 +265,3 @@ void Database::preProcData(){
 	int id = 1;
 	id = Insert("select "+ Field + " from allroads",id);
 }
-
-void Database::reOrder(){
-	string SQL = "select gid from network order by gid";
-	PGresult *res = execQuery(SQL);
-	int num = PQntuples(res);
-	for(int i=0;i<num;++i){
-		string id = PQgetvalue(res,i,0);
-		if(id == std::to_string(i+1)) continue;
-		SQL = "update network set gid = "+std::to_string(i+1) + " where gid = " + id;
-		execUpdate(SQL);
-	}
-	PQclear(res);
-}

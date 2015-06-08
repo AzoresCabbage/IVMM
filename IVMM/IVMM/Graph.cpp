@@ -3,6 +3,10 @@
 #include <set>
 using namespace std;
 
+//static var announcement
+mutex Graph::mylock;
+int Graph::iter;
+
 Graph::Graph(string RTN){
 	roadTN = RTN;
 	constructGraph();
@@ -231,17 +235,11 @@ Point Graph::getPointById(int id){
 	return idToPoint[id];
 }
 
-mutex lock_totCandiPoint;
-
 vector < Point > Graph::getCandidate(Point p,double DIS,int K){
 
 	int regionsz = (int)RegionCen.size();
 	priority_queue < pair<double,int> > Q;
 	for(int i=0;i<regionsz;++i){
-		/*double lon = p.getLon();
-		double lat = p.getLat();
-		double clon = RegionCen[i].getLon();
-		double clat = RegionCen[i].getLat();*/
 		Q.push(make_pair(p.EucDisTo(RegionCen[i]),i));
 		if(Q.size() > 4) Q.pop();
 	}
@@ -273,17 +271,14 @@ vector < Point > Graph::getCandidate(Point p,double DIS,int K){
 	for(auto i=tmp.begin();i!=tmp.end() && cnt<tmpsz;++i,++cnt){
 		Point pivot(i->pts);
 
-		lock_totCandiPoint.lock();
-		pivot.id = totCandiPoint++;
-		allCandiPoint.push_back(pivot);
-		lock_totCandiPoint.unlock();
-
-		pInSeg[pivot.id] = i->rid;
+		{
+			lock_guard<mutex> _(mylock);
+			pivot.id = totCandiPoint++;
+			allCandiPoint.push_back(pivot);
+			pInSeg[pivot.id] = i->rid;
+		}
 		st.push_back(pivot);
-		//fout<<pivot.id<<" "<<pivot.x<<" "<<pivot.y<<" "<<tmp[i].rid<<endl;
 	}
-	//fout<<"END"<<endl;
-	//fout.close();
 	return st;
 }
 
@@ -366,29 +361,26 @@ vector <double> Graph::getSpeed(){
 	return MinSpeed;
 }
 
-mutex mylock;
-int iter;
-DWORD WINAPI Graph::calc(LPVOID ptr){
-	//cerr<<"hi"<<endl;
-	Graph* Ptr = (Graph*)ptr;
-	vector <Point> RegionCen = Ptr->RegionCen;
-	vector <RoadSegment> Road = Ptr->Road;
-	vector <int> *RoadIdxOfRegion = Ptr->RoadIdxOfRegion;
 
-	double R = Ptr->R;
+void Graph::calc(
+	const vector <Point>& RegionCen,
+	const vector <RoadSegment>& Road,
+	vector <int> *RoadIdxOfRegion,
+	double R)
+{
+	
 	int upd = (int)RegionCen.size();
 	int rsz = (int)Road.size();
 	
 	int cur;
-	while (true){
-		mylock.lock();
-		if(iter >= upd){
-			mylock.unlock();
-			return 0;
+	while (true)
+	{
+		{
+			lock_guard<mutex> _(mylock);
+			if(iter >= upd) return;
+			cur = iter;
+			++ iter;
 		}
-		cur = iter;
-		++ iter;
-		mylock.unlock();
 		
 		Point pp = RegionCen[cur];
 		for(int j=0;j<rsz;++j){
@@ -396,9 +388,7 @@ DWORD WINAPI Graph::calc(LPVOID ptr){
 				RoadIdxOfRegion[cur].push_back(Road[j].id);
 			}
 		}
-		//cerr<<cur<<" done!"<<endl;
 	}
-	//cerr<<"bye!"<<endl;
 }
 
 void Graph::divideRegion(){
@@ -426,25 +416,20 @@ void Graph::divideRegion(){
 	
 	iter = 0;
 
-	HANDLE handle[threadNum];
-	for(int i=0;i<threadNum;++i){
-		handle[i] = CreateThread(NULL, 0, calc, this, 0, NULL);  
-	}
-	for(int i=0;i<threadNum;++i){
-		WaitForSingleObject(handle[i], INFINITE); 
-	}
+	thread myThread[threadNum];
+	for(auto &th:myThread)
+		th = thread(calc,ref(RegionCen),ref(Road),(vector <int>*)RoadIdxOfRegion,R);
+	for(auto &th:myThread)
+		th.join();
+	
 	writeToFile();
 	cerr<<"divide region cost "<<clock()-tm<<"ms"<<endl;
 }
 
 void Graph::reset(){
-	//puts("1");
 	allCandiPoint.clear();
-	//puts("2");
 	MinSpeed.clear();
-	//puts("3");
 	pInSeg.clear();
-	//puts("4");
 	totCandiPoint = 0;
 }
 
